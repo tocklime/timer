@@ -1,0 +1,21 @@
+- name: workout
+  items:
+    - name: warmup
+      duration: 5m
+    - name: set
+      repeat: 2
+      items:
+        - repeat: 10
+          items:
+            - name: work
+              duration: 30s
+          between:
+            - name: rest
+              duration: 30s
+        - name: break
+          duration: 2m
+    - name: stretches
+      duration: 5m
+# Workout: 5m Warmup, 2x Set with 2m Rest between, 5m Stretches
+# Set: 10x 30s Work with 30s Rest between
+

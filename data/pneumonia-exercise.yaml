@@ -1,0 +1,17 @@
+- name: breathing
+  repeat: 2
+  items:
+    - repeat: 6
+      duration: 3s
+      items:
+        - name: breathe in
+          duration: 3s
+      between:
+        - name: hold breath
+          duration: 5s
+        - name: breathe out
+          duration: 3s
+    - name: cough
+      duration: 2s
+- name: lie on front with deeper breaths
+  duration: 10m

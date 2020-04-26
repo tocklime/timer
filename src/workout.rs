@@ -3,7 +3,7 @@ enum Work {
     Composite(Vec<WorkoutItem>),
 }
 
-struct WorkoutItem {
+pub struct WorkoutItem {
     name: String,
     reps: u32,
     rest_between: u32,
@@ -11,12 +11,12 @@ struct WorkoutItem {
 }
 
 #[derive(Debug,PartialEq,Eq)]
-struct FlatStatus {
-    name: String,
-    this_rep: u32,
-    total_reps: u32,
-    duration: u32,
-    absolute_start_time: u32,
+pub struct FlatStatus {
+    pub name: String,
+    pub this_rep: u32,
+    pub total_reps: u32,
+    pub duration: u32,
+    pub absolute_start_time: u32,
 }
 
 impl WorkoutItem {
@@ -27,7 +27,7 @@ impl WorkoutItem {
         };
         one_work * self.reps + (self.rest_between * (self.reps - 1))
     }
-    fn describe(&self) -> Vec<FlatStatus> {
+    pub fn describe(&self) -> Vec<FlatStatus> {
         let mut ans = Vec::new();
         let mut start = 0;
         let mut add = |name: String, duration:u32, this_rep, total_reps| {
@@ -58,42 +58,42 @@ impl WorkoutItem {
     }
 }
 
+pub fn joe_wicks() -> WorkoutItem {
+    WorkoutItem {
+        name: "Workout".into(),
+        reps: 1,
+        rest_between: 0,
+        content: Work::Composite(vec![
+            WorkoutItem {
+                name: "Warm up".into(),
+                reps: 1,
+                rest_between: 0,
+                content: Work::Seconds(5 * 60),
+            },
+            WorkoutItem {
+                name: "Set".into(),
+                reps: 2,
+                rest_between: 120,
+                content: Work::Composite(vec![WorkoutItem {
+                    name: "Work".into(),
+                    reps: 10,
+                    rest_between: 30,
+                    content: Work::Seconds(30),
+                }]),
+            },
+            WorkoutItem {
+                name: "Stretches".into(),
+                reps: 1,
+                rest_between: 0,
+                content: Work::Seconds(5 * 60),
+            },
+        ]),
+    }
+}
 #[cfg(test)]
 mod test {
     use super::*;
 
-    fn joe_wicks() -> WorkoutItem {
-        WorkoutItem {
-            name: "Workout".into(),
-            reps: 1,
-            rest_between: 0,
-            content: Work::Composite(vec![
-                WorkoutItem {
-                    name: "Warm up".into(),
-                    reps: 1,
-                    rest_between: 0,
-                    content: Work::Seconds(5 * 60),
-                },
-                WorkoutItem {
-                    name: "Set".into(),
-                    reps: 2,
-                    rest_between: 120,
-                    content: Work::Composite(vec![WorkoutItem {
-                        name: "Work".into(),
-                        reps: 10,
-                        rest_between: 30,
-                        content: Work::Seconds(30),
-                    }]),
-                },
-                WorkoutItem {
-                    name: "Stretches".into(),
-                    reps: 1,
-                    rest_between: 0,
-                    content: Work::Seconds(5 * 60),
-                },
-            ]),
-        }
-    }
     #[test]
     pub fn test_joe_description() {
         assert_eq!(joe_wicks().describe(), Vec::<FlatStatus>::new());

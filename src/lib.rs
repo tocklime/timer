@@ -3,6 +3,7 @@ use js_sys;
 use seed::{prelude::*, *};
 
 mod workout;
+use workout::*;
 // ------ ------
 //     Init
 // ------ ------
@@ -13,6 +14,8 @@ fn init(_url: Url, _orders: &mut impl Orders<Msg>) -> Model {
         seconds: 0,
         started: 0.0,
         elapsed: 0.0,
+        routine: Some(joe_wicks().describe()),
+        routine_ix: 0,
     }
 }
 
@@ -25,6 +28,14 @@ struct Model {
     seconds: u32,
     elapsed: f64,
     started: f64,
+    routine: Option<Vec<FlatStatus>>,
+    routine_ix: usize
+}
+
+impl Model {
+    pub fn current_routine_item(&self) -> Option<&FlatStatus> {
+        self.routine.as_ref().and_then(|v| v.get(self.routine_ix))
+    }
 }
 
 // ------ ------
@@ -50,7 +61,13 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         }
         Msg::OnTick => {
             model.seconds += 1;
-            model.elapsed = (js_sys::Date::now() - model.started) / 1000.0;
+            model.elapsed = (js_sys::Date::now() - model.started) / 100.0;
+            if let Some(c) = model.current_routine_item() {
+                let end = c.absolute_start_time + c.duration;
+                if model.elapsed > end.into() {
+                    model.routine_ix += 1;
+                }
+            }
         }
     }
 }
@@ -65,6 +82,7 @@ fn view(model: &Model) -> impl IntoNodes<Msg> {
         St::FlexDirection => "column",
         St::AlignItems => "center"
     };
+    let curr = model.current_routine_item().unwrap();
 
     div![
         centered_column.clone(),
@@ -76,6 +94,8 @@ fn view(model: &Model) -> impl IntoNodes<Msg> {
                 button![ev(Ev::Click, |_| Msg::StartTimer), "Start"],
                 button![ev(Ev::Click, |_| Msg::StopTimer), "Stop"],
             ]),
+            p![format!("Current item is {} for {}s",curr.name, curr.duration)]
+
         ],
     ]
 }

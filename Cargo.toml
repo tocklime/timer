@@ -10,7 +10,7 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
-seed = {git = "https://github.com/seed-rs/seed/" }
+seed = "0.7.0"
 wasm-bindgen = "^0.2.50"
 js-sys = "0.3.37"
 itertools = "0.9.0"

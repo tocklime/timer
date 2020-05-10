@@ -1,23 +1,22 @@
 use js_sys;
-use web_sys;
-use wasm_bindgen::prelude::*;
-use web_sys::{OscillatorNode, AudioContext};
 use seed::{prelude::*, *};
+use wasm_bindgen::prelude::*;
+use web_sys;
+use web_sys::AudioContext;
 
 mod workout;
 use workout::*;
-use std::convert::TryInto;
 
+use crate::RunningState::RunningSince;
 use lazy_static::lazy_static;
 
 // ------ ------
 //     Model
 // ------ ------
-enum RunningState{
+enum RunningState {
     RunningSince(f64),
     PausedAfter(f64),
     Stopped,
-
 }
 struct Model {
     state: RunningState,
@@ -44,7 +43,6 @@ impl Model {
     }
 }
 
-
 impl Default for Model {
     fn default() -> Self {
         let mctx = web_sys::AudioContext::new().ok();
@@ -58,12 +56,12 @@ impl Default for Model {
 }
 
 lazy_static! {
- static ref END_STATUS : FlatStatus = FlatStatus {
-    name: "END".to_string(),
-    this_rep: 1,
-    total_reps: 1,
-    duration: None,
-};
+    static ref END_STATUS: FlatStatus = FlatStatus {
+        name: "END".to_string(),
+        this_rep: 1,
+        total_reps: 1,
+        duration: None,
+    };
 }
 impl Model {
     pub fn beep(&self, duration: f64, frequency: f32) -> Option<()> {
@@ -77,14 +75,14 @@ impl Model {
             osc.start().ok()?;
             osc.stop_with_when(now + duration).ok()?;
             Some(())
-        }else {
+        } else {
             None
         }
     }
     pub fn get_routine_item(&self, ix: usize) -> &FlatStatus {
         match self.routine.get(ix) {
             None => &END_STATUS,
-            Some(x) => x
+            Some(x) => x,
         }
     }
     pub fn current_routine_item(&self) -> &FlatStatus {
@@ -97,71 +95,61 @@ impl Model {
 // ------ ------
 
 enum Msg {
-    Rendered(Option<RenderTimestampDelta>),
-    ChangeItem(i32),
-    Start,
-    Stop,
-    Pause,
+    Rendered(RenderInfo),
+    ChangeItem(usize),
+    Go,
 }
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg {
-        Msg::Rendered(since_last) => {
+        Msg::Rendered(render_info) => {
             if let Some(d) = model.current_routine_item().duration {
                 let elapsed = model.elapsed();
                 if elapsed > d as f64 {
-                    orders.send_msg(Msg::ChangeItem(1));
+                    orders.send_msg(Msg::ChangeItem(model.routine_ix + 1));
                 }
-                if let Some(s) = since_last {
+                if let Some(s) = render_info.timestamp_delta {
                     let remaining_now = (d as f64) - elapsed;
                     if remaining_now < 3. {
-                        let r : f64 = f64::from(s);
+                        let r: f64 = f64::from(s);
                         let remaining_before = remaining_now + r / 1000.;
                         let whole_rem_now = remaining_now as u64;
                         let whole_rem_before = remaining_before as u64;
                         if whole_rem_before != whole_rem_now {
-                            model.beep(0.1,440.);
+                            model.beep(0.1, 440.);
                         }
                     }
                 }
             }
             orders.after_next_render(Msg::Rendered);
         }
-        Msg::ChangeItem(delta) => {
-            let new_ix = (model.routine_ix as i32) + delta;
-            model.routine_ix = new_ix.try_into().unwrap();
+        Msg::ChangeItem(new_ix) => {
+            model.routine_ix = new_ix;
             match model.state {
                 RunningState::RunningSince(_) => {
                     model.state = RunningState::RunningSince(js_sys::Date::now());
                     let item = model.current_routine_item();
                     let freq = if item.is_rest() { 440. } else { 880. };
-                    model.beep(0.2,freq);
-                },
-                RunningState::PausedAfter(_) => {model.state = RunningState::PausedAfter(1.)},
-                RunningState::Stopped => {model.state = RunningState::Stopped},
+                    model.beep(0.2, freq);
+                }
+                RunningState::PausedAfter(_) => model.state = RunningState::PausedAfter(1.),
+                RunningState::Stopped => model.state = RunningState::Stopped,
             };
         }
-        Msg::Start => {
-            model.routine_ix = 0;
-            model.state = RunningState::RunningSince(js_sys::Date::now());
-            model.beep(0.2,440.);
-        }
-        Msg::Stop => {
-            model.routine_ix = 0;
-            model.state = RunningState::Stopped;
-        }
-        Msg::Pause => {
-            model.beep(0.1,880.);
+        Msg::Go => {
+            model.beep(0.1, 880.);
             match model.state {
                 RunningState::RunningSince(start) => {
                     let done = js_sys::Date::now() - start;
                     model.state = RunningState::PausedAfter(done);
-                },
+                }
                 RunningState::PausedAfter(done) => {
                     let new_start = js_sys::Date::now() - done;
                     model.state = RunningState::RunningSince(new_start);
-                },
-                RunningState::Stopped => {},
+                }
+                RunningState::Stopped => {
+                    model.state = RunningState::RunningSince(js_sys::Date::now());
+                }
             }
         }
     }
@@ -172,45 +160,54 @@ fn after_mount(_: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     AfterMount::default()
 }
 
-fn timer(duration: u64) -> String {
-    format!("{}:{:02}",duration / 60, duration % 60)
-}
 // ------ ------
 //     View
 // ------ ------
 
+fn view_item(class: &str, model: &Model, ix: usize) -> Node<Msg> {
+    let item = model.get_routine_item(ix);
+    div![
+        class! {"item", class, if item.is_rest() {"rest"} else {"work"}},
+        div![class! {"reps"}, item.rep_str()],
+        div![class! {"duration"}, item.dur_str()],
+        &item.name,
+        ev(Ev::Click, move |_| Msg::ChangeItem(ix))
+    ]
+}
+fn view_list_item(ix: usize, item: &FlatStatus, active_ix: usize) -> Node<Msg> {
+    li![
+        class! {if item.is_rest() {"rest"} else {"work"}
+        if active_ix > ix { "done" } else if active_ix == ix {"active"} else {"future"}},
+        ev(Ev::Click, move |_| Msg::ChangeItem(ix)),
+        span![class! {"desc"}, format!("{} {}", item.rep_str(), item.name)],
+        span![class! {"time"}, item.dur_str()]
+    ]
+}
+
 fn view(model: &Model) -> impl IntoNodes<Msg> {
     let curr = model.current_routine_item();
-    let next = model.get_routine_item(model.routine_ix + 1);
     let time = match curr.duration {
-        None => {model.elapsed()},
-        Some(d) => model.get_second_adjust() + (d as f64) - model.elapsed()
+        None => model.elapsed(),
+        Some(d) => model.get_second_adjust() + (d as f64) - model.elapsed(),
     } as u64;
     div![
         // --- Seconds ---
         div![
             class! {"workout"},
             div![
-                class! {"time"},
-                timer(time)
+                class! {"time", if curr.is_rest() {"rest"} else {"work"}},
+                workout::timer(time),
+                ev(Ev::Click, |_| Msg::Go)
             ],
-            div![
-                class! {"controls"},
-                button! [ "Start", ev(Ev::Click, |_| Msg::Start) ],
-                button! [ "Pause", ev(Ev::Click, |_| Msg::Pause) ],
-                button! [ "Stop", ev(Ev::Click, |_| Msg::Stop) ]
-            ],
-            div![
-                class! {"curr"},
-                format!(
-                    "Current item is {} for {:?}s",
-                    curr.name, curr.duration
-                ),
-            ],
-            div![
-                class! {"next"},
-                format!( "Next item is {} for {:?}s", next.name, next.duration ),
-                ev(Ev::Click, |_| Msg::ChangeItem(1))
+            view_item("curr", model, model.routine_ix),
+            view_item("next", model, model.routine_ix + 1),
+            ul![
+                class! {"workout-list"},
+                model
+                    .routine
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, i)| view_list_item(ix, i, model.routine_ix))
             ]
         ],
     ]
@@ -222,7 +219,7 @@ fn view(model: &Model) -> impl IntoNodes<Msg> {
 
 #[wasm_bindgen(start)]
 pub fn start() {
-    App::builder(update,view)
+    App::builder(update, view)
         .after_mount(after_mount)
         .build_and_start();
 }

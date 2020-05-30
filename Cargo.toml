@@ -15,6 +15,7 @@ wasm-bindgen = "^0.2.50"
 js-sys = "0.3.37"
 itertools = "0.9.0"
 lazy_static = "1.4.0"
+serde_dhall = "0.5.3" 
 
 [dependencies.web-sys]
 version = "0.3.37"

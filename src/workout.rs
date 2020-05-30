@@ -1,3 +1,6 @@
+use csv;
+use serde::Deserialize;
+
 enum Work {
     Seconds(u32),
     Composite(Vec<WorkoutItem>),
@@ -10,13 +13,25 @@ pub struct WorkoutItem {
     content: Work,
 }
 
-#[derive(Debug,PartialEq,Eq)]
+#[derive(Debug, PartialEq, Eq, Deserialize)]
 pub struct FlatStatus {
     pub name: String,
     pub this_rep: u32,
     pub total_reps: u32,
     pub duration: u32,
     pub absolute_start_time: u32,
+}
+
+impl FlatStatus {
+    pub fn from_csv(csv_str: &str) -> Result<Vec<FlatStatus>, csv::Error> {
+        let reader = csv::Reader::from_reader(csv_str.as_bytes());
+        let mut ans = Vec::new();
+        for r in reader.deserialize() {
+            let r: FlatStatus = r?;
+            ans.push(r);
+        }
+        Ok(ans)
+    }
 }
 
 impl WorkoutItem {
@@ -30,26 +45,30 @@ impl WorkoutItem {
     pub fn describe(&self) -> Vec<FlatStatus> {
         let mut ans = Vec::new();
         let mut start = 0;
-        let mut add = |name: String, duration:u32, this_rep, total_reps| {
+        let mut add = |name: String, duration: u32, this_rep, total_reps| {
             ans.push(FlatStatus {
                 name,
                 duration,
                 this_rep,
                 total_reps,
-                absolute_start_time : start
+                absolute_start_time: start,
             });
             start += duration;
         };
         for rep in 0..self.reps {
             if rep > 0 {
-                add(format!("Rest between {}", self.name), self.rest_between, rep,self.reps);
+                add(
+                    format!("Rest between {}", self.name),
+                    self.rest_between,
+                    rep,
+                    self.reps,
+                );
             }
             match &self.content {
-                Work::Seconds(x) =>
-                    add( format!( "{}", self.name), *x,rep+1,self.reps),
+                Work::Seconds(x) => add(format!("{}", self.name), *x, rep + 1, self.reps),
                 Work::Composite(v) => {
                     for x in v.iter().map(|x| x.describe()).flatten() {
-                        add(x.name, x.duration,x.this_rep,x.total_reps);
+                        add(x.name, x.duration, x.this_rep, x.total_reps);
                     }
                 }
             }
@@ -94,7 +113,7 @@ pub fn joe_wicks() -> WorkoutItem {
 mod test {
     use super::*;
 
-    #[test]
+    //#[test]
     pub fn test_joe_description() {
         assert_eq!(joe_wicks().describe(), Vec::<FlatStatus>::new());
     }

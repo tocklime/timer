@@ -1,13 +1,77 @@
 Joe:
 
-Workout: 5m Warmup, 2x Set with 2m Rest between, 5m Stretches
+Workout: 5m Warmup, 2x Set with 2m rests, 5m Stretches
 Set: 10x 30s Work with 30s Rest between
+
 
 Pneumonia:
 All: Breathing, Resting
 Breathing: 2x ((6x (3s "breathe in") with (5s hold, 3s "breathe out") between), 2s cough)
 Resting: 10m "Lie down on front with deeper breaths"
 
+7 min Workout:
+30s of each of "Star Jumps, Wall Sit, Push ups, Ab crunch, Chair step, Squat, Tricep dip, Plank, High knees, Lunge, Push up with rotation, Side plank L, Side plank R" with 5s rests.
+
+Joe:
+5m Warmup
+2x (10x 30s work with 30s rests) with 2m rests
+5m Stretches
+
+Pneumonia:
+2x:
+    5x each "3s breathe in, 5s hold, 3s breathe out"
+    3s breathe in
+    1s cough
+10m "Lie down on front with deeper breaths"
+
 
 Line ::= Title ": " List<Spec>
 Spec ::= [Nx] 
+
+
+
+Joe:
+A set is 10x 30s Work with 30s rests
+A workout is 2x set with 2m rests
+A everything is 
+
+
+
+Dhall experiments:
+
+let SimpleWork : Type = 
+    { name : Text, duration : Natural }
+
+let Work : Type = < Ref : Text | Simple : SimpleWork >
+
+let Thing : Type = 
+    { repeats : Natural
+    , do : List Work
+    , rest: Natural
+    } 
+
+let simple =
+ \(name : Text) -> 
+ \(dur : Natural) -> 
+ 	Work.Simple { name = name, duration = dur }
+
+let reps = 
+ \(repeat : Natural) ->
+ \(rest : Natural) -> 
+ \(work : List Work) -> 
+ 	{ repeats = repeat
+    , rest = rest
+    , do = work
+    }
+
+in
+{ definitions = 
+	{ set = reps 10 30 [simple "Work" 30]
+    , two_sets = reps 2 120 [Work.Ref "set"]
+    }
+, sequence =
+	[ simple "Warmup" (5*60)
+    , Work.Ref "two_sets"
+    , simple "Stretches" (5*60)
+    ]
+}

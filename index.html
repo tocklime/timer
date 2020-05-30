@@ -1,5 +1,97 @@
-<section id="app"></section>
-<script type="module">
-  import init from "/pkg/package.js";
-  init("/pkg/package_bg.wasm");
-</script>
+<html>
+  <head>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background-color: hsl(0, 0%, 50%);
+        font-family: sans-serif;
+      }
+
+      .workout {
+        padding: 10px;
+        display: grid;
+        grid-gap: 1em;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: 5fr 4fr;
+        grid-template-areas:
+          "time time list"
+          "curr next list";
+        height: 100vh;
+      }
+      .workout-list {
+        grid-area: list;
+        overflow-y: scroll;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+      }
+      .workout-list .time {
+        text-align: right;
+        float: right;
+      }
+      .workout-list li {
+        padding: 1em;
+      }
+      .workout > div {
+        border-radius: 5px;
+      }
+      div.time {
+        grid-area: time;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        font-size: 40vh;
+      }
+      .item {
+        padding: 1em;
+        position: relative;
+        font-size: 4rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .item .duration {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        margin: 20px;
+        font-size: 3rem;
+      }
+      .item .reps {
+        position: absolute;
+        top: 0;
+        right: 0;
+        margin: 20px;
+        font-size: 3rem;
+      }
+      .curr {
+        grid-area: curr;
+      }
+      .next {
+        grid-area: next;
+      }
+      .work {
+        background-color: hsl(0, 65%, 35%);
+      }
+      .rest {
+        background-color: hsl(100, 65%, 35%);
+      }
+
+      .workout-list li.done {
+        background-color: hsl(0, 0%, 50%);
+      }
+      .workout-list li.active {
+        background-color: rgb(147, 135, 31);
+      }
+    </style>
+  </head>
+  <body>
+    <section id="app"></section>
+    <script type="module">
+      import init from "/pkg/package.js";
+      init("/pkg/package_bg.wasm");
+    </script>
+  </body>
+</html>

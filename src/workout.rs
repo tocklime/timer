@@ -18,8 +18,32 @@ pub struct FlatStatus {
     pub name: String,
     pub this_rep: u32,
     pub total_reps: u32,
-    pub duration: u32,
-    pub absolute_start_time: u32,
+    pub duration: Option<u32>,
+}
+
+pub fn timer(duration: u64) -> String {
+    format!("{}:{:02}", duration / 60, duration % 60)
+}
+
+impl FlatStatus {
+    pub fn is_rest(&self) -> bool {
+        let lc = self.name.to_ascii_lowercase();
+        lc.starts_with("rest") || lc.starts_with("recover") || lc.starts_with("end")
+    }
+    pub fn rep_str(&self) -> String {
+        if self.total_reps > 1 {
+            format!("{}/{}", self.this_rep, self.total_reps)
+        } else {
+            "".into()
+        }
+    }
+    pub fn dur_str(&self) -> String {
+        if let Some(d) = self.duration {
+            timer(d.into())
+        } else {
+            "".into()
+        }
+    }
 }
 
 impl FlatStatus {
@@ -42,33 +66,25 @@ impl WorkoutItem {
         };
         one_work * self.reps + (self.rest_between * (self.reps - 1))
     }
-    pub fn describe(&self) -> Vec<FlatStatus> {
+    pub fn describe<'a>(&'a self) -> Vec<FlatStatus> {
         let mut ans = Vec::new();
-        let mut start = 0;
-        let mut add = |name: String, duration: u32, this_rep, total_reps| {
+        let mut add = |name: &str, duration: Option<u32>, this_rep, total_reps| {
             ans.push(FlatStatus {
-                name,
+                name: name.to_string(),
                 duration,
                 this_rep,
                 total_reps,
-                absolute_start_time: start,
             });
-            start += duration;
         };
         for rep in 0..self.reps {
-            if rep > 0 {
-                add(
-                    format!("Rest between {}", self.name),
-                    self.rest_between,
-                    rep,
-                    self.reps,
-                );
+            if rep > 0 && self.rest_between > 0 {
+                add("Rest", Some(self.rest_between), 1, 1);
             }
             match &self.content {
-                Work::Seconds(x) => add(format!("{}", self.name), *x, rep + 1, self.reps),
+                Work::Seconds(x) => add(&format!("{}", self.name), Some(*x), rep + 1, self.reps),
                 Work::Composite(v) => {
                     for x in v.iter().map(|x| x.describe()).flatten() {
-                        add(x.name, x.duration, x.this_rep, x.total_reps);
+                        add(&x.name, x.duration, x.this_rep, x.total_reps);
                     }
                 }
             }
@@ -87,7 +103,7 @@ pub fn joe_wicks() -> WorkoutItem {
                 name: "Warm up".into(),
                 reps: 1,
                 rest_between: 0,
-                content: Work::Seconds(5 * 60),
+                content: Work::Seconds(5),
             },
             WorkoutItem {
                 name: "Set".into(),
@@ -120,8 +136,5 @@ mod test {
     #[test]
     pub fn joe_duration() {
         assert_eq!(joe_wicks().total_duration(), 31 * 60);
-        let descr = joe_wicks().describe();
-        let last = descr.last().unwrap();
-        assert_eq!(last.duration + last.absolute_start_time, 31 * 60);
     }
 }

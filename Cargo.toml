@@ -11,16 +11,17 @@ crate-type = ["cdylib"]
 
 
 [dependencies]
-seed = "0.7"
+seed = "^0.7.0"
 wasm-bindgen = "^0.2.50"
-js-sys = "0.3"
-itertools = "0.9.0"
-lazy_static = "1.4.0"
-serde_dhall = "0.5.3" 
-csv = "1.1"
+js-sys = "^0.3.40"
+itertools = "^0.9.0"
+lazy_static = "^1.4.0"
+serde_dhall = "^0.5.3" 
+serde = "^1.0.111"
+csv = "^1.1.3"
 
 [dependencies.web-sys]
-version = "0.3.37"
+version = "^0.3.40"
 features = [
   'AudioContext',
   'AudioDestinationNode',

@@ -48,7 +48,7 @@ impl FlatStatus {
 
 impl FlatStatus {
     pub fn from_csv(csv_str: &str) -> Result<Vec<FlatStatus>, csv::Error> {
-        let reader = csv::Reader::from_reader(csv_str.as_bytes());
+        let mut reader = csv::Reader::from_reader(csv_str.as_bytes());
         let mut ans = Vec::new();
         for r in reader.deserialize() {
             let r: FlatStatus = r?;

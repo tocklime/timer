@@ -39,15 +39,20 @@ pub struct Routine {
     top: String,
 }
 impl Routine {
-    pub fn to_full_workout(&self) -> Vec<FlatStatus> {
+    pub fn to_full_workout(&self) -> Result<Vec<FlatStatus>, String> {
         self.to_workout(&self.top)
     }
-    pub fn to_workout(&self, top: &str) -> Vec<FlatStatus> {
+    pub fn to_workout(&self, top: &str) -> Result<Vec<FlatStatus>, String> {
         let mut current = vec![top];
         let mut ans = Vec::new();
         while !current.is_empty() {
-            let c = current.pop().unwrap();
-            let lu = self.definitions.get(c).unwrap();
+            let c = current
+                .pop()
+                .ok_or("Stack empty whilst enumerating routine")?;
+            let lu = self
+                .definitions
+                .get(c)
+                .ok_or_else(|| format!("Unknown workout item: {}", c))?;
             let work_list = match &lu.work {
                 Set::Set(list) => Cow::Borrowed(list),
                 Set::Repeat(sr) => Cow::Owned(vec![sr.work.clone(); sr.repeats]),
@@ -56,28 +61,26 @@ impl Routine {
                 if ix > 0 {
                     ans.push(FlatStatus {
                         name: "rest".to_owned(),
-                        duration: lu.rest,
-                        this_rep: (ix as u32) + 1,
-                        total_reps: work_list.len() as u32,
-                        absolute_start_time: 0,
+                        duration: Some(lu.rest),
+                        this_rep: 1,
+                        total_reps: 1,
                     })
                 }
                 match w {
                     Work::Simple(sw) => ans.push(FlatStatus {
                         name: sw.name.to_owned(),
-                        duration: sw.duration,
+                        duration: Some(sw.duration),
                         this_rep: (ix as u32) + 1,
                         total_reps: work_list.len() as u32,
-                        absolute_start_time: 0,
                     }),
                     Work::Ref(n) => {
-                        let mut v = self.to_workout(n);
+                        let mut v = self.to_workout(n)?;
                         ans.append(&mut v);
                     }
                 }
             }
         }
-        ans
+        Ok(ans)
     }
 }
 
@@ -86,8 +89,8 @@ pub fn mk7min() -> Routine {
     serde_dhall::from_str(&data).parse().unwrap()
 }
 
-const TYPES: &'static str = include_str!("../data/types.dhall");
-const SEVEN: &'static str = include_str!("../data/7min.dhall");
+pub const TYPES: &'static str = include_str!("../data/types.dhall");
+pub const SEVEN: &'static str = include_str!("../data/7min.dhall");
 
 #[cfg(test)]
 mod test {

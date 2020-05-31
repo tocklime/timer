@@ -46,15 +46,18 @@ let mkWorkout =
 
 let ref = Work.Ref
 
-in
+-- inlining this helpful method until dhall+wasm can do web requests :)
+let map
+    : ∀(a : Type) → ∀(b : Type) → (a → b) → List a → List b
+    =   λ(a : Type)
+      → λ(b : Type)
+      → λ(f : a → b)
+      → λ(xs : List a)
+      → List/build
+          b
+          (   λ(list : Type)
+            → λ(cons : b → list → list)
+            → List/fold a xs list (λ(x : a) → cons (f x))
+          )
 
---{ simple = simple
---, ref = Work.Ref
---, seq = seq
---, mkWorkout = mkWorkout
---, Work = Work
---, KVP = KVP
---, repeated = repeated
---, set = set
---, Set = Set
---}
+in

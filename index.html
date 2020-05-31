@@ -6,8 +6,29 @@
       }
       body {
         margin: 0;
-        background-color: hsl(0, 0%, 50%);
+        background-color: hsl(0, 0%, 95%);
         font-family: sans-serif;
+      }
+      .config {
+        padding: 10px;
+        display: grid;
+        grid-gap: 1em;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto 1fr;
+        grid-template-areas: "help help" "editor result";
+        height: 100vh;
+      }
+      .config textarea {
+        grid-area: editor;
+      }
+      .config pre {
+        grid-area: result;
+      }
+      .config button {
+        grid-area: result;
+      }
+      .config .help {
+        grid-area: help;
       }
 
       .workout {
@@ -73,17 +94,17 @@
         grid-area: next;
       }
       .work {
-        background-color: hsl(0, 65%, 35%);
+        background-color: hsl(0, 75%, 50%);
       }
       .rest {
-        background-color: hsl(100, 65%, 35%);
+        background-color: hsl(100, 75%, 50%);
       }
 
       .workout-list li.done {
         background-color: hsl(0, 0%, 50%);
       }
       .workout-list li.active {
-        background-color: rgb(147, 135, 31);
+        background-color: hsl(40, 75%, 50%);
       }
     </style>
   </head>

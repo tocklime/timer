@@ -23,6 +23,7 @@
       }
       .config pre {
         grid-area: result;
+        white-space: pre-wrap;
       }
       .config button {
         grid-area: result;
@@ -35,8 +36,8 @@
         padding: 10px;
         display: grid;
         grid-gap: 1em;
-        grid-template-columns: 1fr 1fr;
-        grid-template-rows: 5fr 4fr;
+        grid-template-columns: 1fr 1fr auto;
+        grid-template-rows: 1fr 1fr;
         grid-template-areas:
           "time time list"
           "curr next list";
@@ -61,9 +62,7 @@
       }
       div.time {
         grid-area: time;
-        text-align: center;
         font-variant-numeric: tabular-nums;
-        font-size: 40vh;
       }
       .item {
         padding: 1em;

@@ -226,7 +226,16 @@ fn view_workout(model: &Model) -> Node<Msg> {
             class! {"workout"},
             div![
                 class! {"time", if curr.is_rest() {"rest"} else {"work"}},
-                workout::timer(time),
+                svg![
+                    attrs![At::ViewBox=>"0 0 43 18"],
+                    style![St::Width=>"100%"],
+                    text![
+                        attrs![At::X=>"21", At::Y=>"14.5"],
+                        style!["text-anchor"=>"middle"],
+                        workout::timer(time)
+                    ]
+                ],
+                //workout::timer(time),
                 ev(Ev::Click, |_| Msg::Go)
             ],
             view_item("curr", curr, model.routine_ix),

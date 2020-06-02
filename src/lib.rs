@@ -10,6 +10,12 @@ mod routine;
 
 use lazy_static::lazy_static;
 
+use mqtt::packet;
+use mqtt::control::ProtocolName;
+use mqtt::Encodable;
+use mqtt::Decodable;
+use std::io::Cursor;
+
 // ------ ------
 //     Model
 // ------ ------
@@ -24,6 +30,9 @@ struct Model {
     state: RunningState,
     routine_ix: usize,
     audio_ctx: Option<AudioContext>,
+    mqtt_url: String,
+    web_socket: Option<WebSocket>,
+    web_socket_reconnector: Option<StreamHandle>,
 }
 
 impl Model {
@@ -50,20 +59,30 @@ impl Model {
         let fs = comp.to_full_workout()?;
         Ok(fs)
     }
+    fn create_websocket(&self, orders: &impl Orders<Msg>) -> WebSocket {
+        WebSocket::builder(&self.mqtt_url, orders)
+            .on_open(|| Msg::WebSocketOpened)
+            .on_message(Msg::WebSocketMsgReceived)
+            .on_close(Msg::WebSocketClosed)
+            .on_error(|| Msg::WebSocketFailed)
+            .build_and_open()
+            .unwrap()
+    }
 }
 
 impl Default for Model {
     fn default() -> Self {
         let mctx = web_sys::AudioContext::new().ok();
-        let mut s = Self {
+        Self {
             state: RunningState::Configure,
             config: routine::SEVEN.to_owned(),
             routine: Err("Not compiled yet".to_owned()),
             routine_ix: 0,
             audio_ctx: mctx,
-        };
-        s.routine = s.compile_config();
-        s
+            web_socket: None,
+            web_socket_reconnector: None,
+            mqtt_url: "ws://broker.mqttdashboard.com:8000/mqtt".to_owned(),
+        }
     }
 }
 
@@ -109,13 +128,18 @@ impl Model {
 //    Update
 // ------ ------
 
-#[derive(Clone)]
+//#[derive(Clone)]
 enum Msg {
     Rendered(RenderInfo),
     ChangeItem(usize),
     Go,
     ConfigChanged(String),
     ToConfig,
+    WebSocketOpened,
+    WebSocketClosed(CloseEvent),
+    WebSocketMsgReceived(WebSocketMessage),
+    WebSocketFailed,
+    ReconnectWebSocket(usize),
 }
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
@@ -181,11 +205,58 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                 }
             }
         }
+        Msg::WebSocketOpened => {
+            model.web_socket_reconnector = None;
+            log!("WS Open");
+            //send con packet.
+            let con_pkt = mqtt::packet::ConnectPacket::new("MQTT", "clientId irstenaisuetn");
+            let mut buffer = Vec::new();
+            con_pkt.encode(&mut buffer).unwrap();
+            model.web_socket.as_ref().unwrap().send_bytes(&buffer).unwrap();
+        }
+        Msg::WebSocketClosed(close_event) => {
+            log!("WS Closed");
+            if !close_event.was_clean() && model.web_socket_reconnector.is_none() {
+                model.web_socket_reconnector = Some(
+                    orders.stream_with_handle(streams::backoff(None, Msg::ReconnectWebSocket)),
+                );
+            }
+        }
+        Msg::WebSocketMsgReceived(msg) => {
+            log!("WS Message!");
+
+            if msg.contains_text() {
+                log!(format!("Text message: {}", msg.text().unwrap()));
+            } else if msg.contains_blob() {
+                log!(format!("blob message: {:?}", msg));
+                orders.perform_cmd(async move {
+                    let bytes = msg.bytes().await.unwrap();
+                    let mut dec_buf= Cursor::new(&bytes);
+                    let decoded = mqtt::packet::VariablePacket::decode(&mut dec_buf).unwrap();
+                    log!(format!("Decoded: {:?}",decoded));
+                });
+            }else {
+                log!(format!("Binary message? {:?}", msg));
+            }
+        }
+        Msg::WebSocketFailed => {
+            log!("WS Failed");
+            if model.web_socket_reconnector.is_none() {
+                model.web_socket_reconnector = Some(
+                    orders.stream_with_handle(streams::backoff(None, Msg::ReconnectWebSocket)),
+                );
+            }
+        }
+        Msg::ReconnectWebSocket(retries) => {
+            log!("Connect attempt: ", retries);
+            model.web_socket = Some(model.create_websocket(orders));
+        }
     }
 }
 
 fn after_mount(_: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     orders.after_next_render(Msg::Rendered);
+    orders.send_msg(Msg::ReconnectWebSocket(0));
     AfterMount::default()
 }
 

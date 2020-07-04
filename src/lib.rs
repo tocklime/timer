@@ -14,7 +14,7 @@ use lazy_static::lazy_static;
 use mqtt::packet;
 use mqtt::Decodable;
 use mqtt::Encodable;
-use packet::{Packet, VariablePacket, ConnectPacket};
+use packet::{Packet, VariablePacket, ConnectPacket, PingrespPacket};
 use std::io::Cursor;
 
 use ulid::Ulid;
@@ -73,6 +73,7 @@ impl Model {
             .on_message(Msg::WebSocketMsgReceived)
             .on_close(Msg::WebSocketClosed)
             .on_error(|| Msg::WebSocketFailed)
+            .protocols(&["mqttv3.1"])
             .build_and_open()
             .unwrap()
     }
@@ -88,7 +89,7 @@ impl Default for Model {
             audio_ctx: web_sys::AudioContext::new().ok(),
             web_socket: None,
             web_socket_reconnector: None,
-            mqtt_url: "ws://broker.mqttdashboard.com:8000/mqtt".to_owned(),
+            mqtt_url: "wss://test.mosquitto.org:8081/mqtt".to_owned(),
             channel: "test".to_owned(),
             next_pkid: 1,
             my_id: Ulid::new(),
@@ -272,7 +273,9 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             log!("WS Open");
             //send con packet.
             let clientId = model.my_id.to_string();
-            let con_pkt = ConnectPacket::new("MQTT", clientId);
+            let mut con_pkt = ConnectPacket::new("MQTT", clientId);
+            con_pkt.set_keep_alive(30);
+            con_pkt.set_clean_session(true);
             orders.send_msg(Msg::WebSocketSend(VariablePacket::ConnectPacket(con_pkt)));
         }
         Msg::WebSocketClosed(close_event) => {
@@ -322,7 +325,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                         packet::VariablePacket::PubrecPacket(_) => None,
                         packet::VariablePacket::PubrelPacket(_) => None,
                         packet::VariablePacket::PubcompPacket(_) => None,
-                        packet::VariablePacket::PingreqPacket(_) => None,
+                        packet::VariablePacket::PingreqPacket(_) => Some(Msg::WebSocketSend(VariablePacket::PingrespPacket(PingrespPacket::new()))),
                         packet::VariablePacket::PingrespPacket(_) => None,
                         packet::VariablePacket::SubscribePacket(_) => None,
                         packet::VariablePacket::SubackPacket(_) => None,

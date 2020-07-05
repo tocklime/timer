@@ -83,11 +83,6 @@ impl Routine {
     }
 }
 
-pub fn mk7min() -> Routine {
-    let data = TYPES.to_string() + SEVEN;
-    serde_dhall::from_str(&data).parse().unwrap()
-}
-
 pub const TYPES: &'static str = include_str!("../data/types.dhall");
 pub const SEVEN: &'static str = include_str!("../data/7min.dhall");
 

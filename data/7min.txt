@@ -1,0 +1,13 @@
+"Star jumps", 30, 0, 10
+"Wall sit", 30, 0, 10
+"Push ups", 30, 0, 10
+"Ab crunch", 30, 0, 10
+"Chair step", 30, 0, 10
+"Squat", 30, 0, 10
+"Tricep dip", 30, 0, 10
+"Plank", 30, 0, 10
+"High knees", 30, 0, 10
+"Lunge", 30, 0, 10
+"Push up with rotation", 30, 0, 10
+"Side plank 1", 30, 0, 10
+"Side plank 2", 30, 0, 0

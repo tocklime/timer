@@ -1,13 +1,9 @@
 use js_sys;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::*;
 use web_sys;
 use web_sys::AudioContext;
 
-mod workout;
-use workout::*;
-mod routine;
 
 use lazy_static::lazy_static;
 
@@ -18,22 +14,26 @@ use packet::{Packet, VariablePacket, ConnectPacket, PingrespPacket};
 use std::io::Cursor;
 
 use ulid::Ulid;
+use workoutstep::WorkoutStep;
+
+mod workoutstep;
 
 // ------ ------
 //     Model
 // ------ ------
 enum RunningState {
-    RunningSince(f64),
-    PausedAfter(f64),
+    RunningSince(usize,f64),
+    PausedAfter(usize,f64),
     Configure,
 }
 
-const topic_prefix: &str = "/xcvyunaizrsemkt/timer-app/";
+const TOPIC_PREFIX: &str = "/xcvyunaizrsemkt/timer-app/";
+
+
 struct Model {
     config: String,
-    routine: Result<Vec<FlatStatus>, String>,
+    routine: Result<Vec<WorkoutStep>, String>,
     state: RunningState,
-    routine_ix: usize,
     audio_ctx: Option<AudioContext>,
     mqtt_url: String,
     web_socket: Option<WebSocket>,
@@ -46,26 +46,22 @@ struct Model {
 impl Model {
     fn elapsed(&self) -> f64 {
         let millis = match self.state {
-            RunningState::RunningSince(start) => js_sys::Date::now() - start,
-            RunningState::PausedAfter(p) => p,
+            RunningState::RunningSince(_,start) => js_sys::Date::now() - start,
+            RunningState::PausedAfter(_,p) => p,
             RunningState::Configure => 0.,
         };
         millis / 1000.
     }
     fn get_second_adjust(&self) -> f64 {
         match self.state {
-            RunningState::RunningSince(_) => 1.,
-            RunningState::PausedAfter(_) => 1.,
+            RunningState::RunningSince(_,_) => 1.,
+            RunningState::PausedAfter(_,_) => 1.,
             RunningState::Configure => 0.,
         }
     }
-    fn compile_config(&self) -> Result<Vec<FlatStatus>, String> {
-        let full = routine::TYPES.to_owned() + &self.config;
-        let comp = serde_dhall::from_str(&full)
-            .parse::<routine::Routine>()
-            .map_err(|e| format!("{}", e))?;
-        let fs = comp.to_full_workout()?;
-        Ok(fs)
+    fn compile_config(&self) -> Result<Vec<WorkoutStep>, String> {
+        WorkoutStep::from_csv(&self.config)
+        .map_err(|c| format!("{}",c))
     }
     fn create_websocket(&self, orders: &impl Orders<Msg>) -> WebSocket {
         WebSocket::builder(&self.mqtt_url, orders)
@@ -83,9 +79,8 @@ impl Default for Model {
     fn default() -> Self {
         let mut a = Self {
             state: RunningState::Configure,
-            config: routine::SEVEN.to_owned(),
+            config: workoutstep::SEVEN.to_owned(),
             routine: Err("Not compiled yet".to_owned()),
-            routine_ix: 0,
             audio_ctx: web_sys::AudioContext::new().ok(),
             web_socket: None,
             web_socket_reconnector: None,
@@ -100,11 +95,11 @@ impl Default for Model {
 }
 
 lazy_static! {
-    static ref END_STATUS: FlatStatus = FlatStatus {
+    static ref END_STATUS: WorkoutStep = WorkoutStep {
         name: "END".to_string(),
-        this_rep: 1,
-        total_reps: 1,
         duration: None,
+        rest_after: 0,
+        rest_before: 0
     };
 }
 impl Model {
@@ -123,7 +118,7 @@ impl Model {
             None
         }
     }
-    pub fn get_routine_item(&self, ix: usize) -> Option<&FlatStatus> {
+    pub fn get_routine_item(&self, ix: usize) -> Option<&WorkoutStep> {
         match &self.routine {
             Ok(vec) => match vec.get(ix) {
                 None => Some(&END_STATUS),
@@ -132,8 +127,15 @@ impl Model {
             Err(_) => None,
         }
     }
-    pub fn current_routine_item(&self) -> Option<&FlatStatus> {
-        self.get_routine_item(self.routine_ix)
+    pub fn current_routine_ix(&self) -> Option<usize> {
+        match self.state {
+            RunningState::RunningSince(ix, _) => Some(ix),
+            RunningState::PausedAfter(ix, _) => Some(ix),
+            RunningState::Configure => None
+        }
+    }
+    pub fn current_routine_item(&self) -> Option<&WorkoutStep> {
+        self.current_routine_ix().and_then(|x|self.get_routine_item(x))
     }
 }
 
@@ -179,7 +181,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         Msg::InternalMsg(msg2, src) => {
             if src == MsgSource::Internal {
                 let target =
-                    mqtt::TopicName::new(format!("{}{}", topic_prefix, model.channel)).unwrap();
+                    mqtt::TopicName::new(format!("{}{}", TOPIC_PREFIX, model.channel)).unwrap();
                 let pkid = model.next_pkid;
                 model.next_pkid += 1;
                 let qos = mqtt::packet::QoSWithPacketIdentifier::new(
@@ -205,33 +207,28 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                 InternalMsg::Go => {
                     model.beep(0.1, 880.);
                     match model.state {
-                        RunningState::RunningSince(start) => {
+                        RunningState::RunningSince(ix,start) => {
                             let done = js_sys::Date::now() - start;
-                            model.state = RunningState::PausedAfter(done);
+                            model.state = RunningState::PausedAfter(ix,done);
                         }
-                        RunningState::PausedAfter(done) => {
+                        RunningState::PausedAfter(ix,done) => {
                             let new_start = js_sys::Date::now() - done;
-                            model.state = RunningState::RunningSince(new_start);
+                            model.state = RunningState::RunningSince(ix,new_start);
                         }
                         RunningState::Configure => {
                             if model.routine.is_ok() {
-                                model.state = RunningState::RunningSince(js_sys::Date::now());
+                                model.state = RunningState::RunningSince(0,js_sys::Date::now());
                             }
                         }
                     }
                 }
                 InternalMsg::ChangeItem(new_ix) => {
-                    model.routine_ix = new_ix;
                     match model.state {
-                        RunningState::RunningSince(_) => {
-                            model.state = RunningState::RunningSince(js_sys::Date::now());
-                            let item = model
-                                .current_routine_item()
-                                .expect("Should have workout item when trying to beep");
-                            let freq = if item.is_rest() { 440. } else { 880. };
-                            model.beep(0.2, freq);
+                        RunningState::RunningSince(_,_) => {
+                            model.state = RunningState::RunningSince(new_ix,js_sys::Date::now());
+                            model.beep(0.2, 880.);
                         }
-                        RunningState::PausedAfter(_) => model.state = RunningState::PausedAfter(1.),
+                        RunningState::PausedAfter(_,_) => model.state = RunningState::PausedAfter(new_ix,1.),
                         RunningState::Configure => (),
                     };
                 }
@@ -241,7 +238,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             if let Some(d) = model.current_routine_item().and_then(|x| x.duration) {
                 let elapsed = model.elapsed();
                 if elapsed > d as f64 {
-                    orders.send_msg(imsg(InternalMsg::ChangeItem(model.routine_ix + 1)));
+                    orders.send_msg(imsg(InternalMsg::ChangeItem(model.current_routine_ix().unwrap() + 1)));
                 }
                 if let Some(s) = render_info.timestamp_delta {
                     let remaining_now = (d as f64) - elapsed;
@@ -272,8 +269,8 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             model.web_socket_reconnector = None;
             log!("WS Open");
             //send con packet.
-            let clientId = model.my_id.to_string();
-            let mut con_pkt = ConnectPacket::new("MQTT", clientId);
+            let client_id = model.my_id.to_string();
+            let mut con_pkt = ConnectPacket::new("MQTT", client_id);
             con_pkt.set_keep_alive(30);
             con_pkt.set_clean_session(true);
             orders.send_msg(Msg::WebSocketSend(VariablePacket::ConnectPacket(con_pkt)));
@@ -288,7 +285,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         }
         Msg::MqttSubscribe => {
             let target =
-                mqtt::TopicFilter::new(format!("{}{}", topic_prefix, model.channel)).unwrap();
+                mqtt::TopicFilter::new(format!("{}{}", TOPIC_PREFIX, model.channel)).unwrap();
             let pkid = model.next_pkid;
             let qos = mqtt::QualityOfService::Level0;
             model.next_pkid += 1;
@@ -363,60 +360,77 @@ fn after_mount(_: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
 //     View
 // ------ ------
 
-fn view_item(class: &str, item: &FlatStatus, ix: usize) -> Node<Msg> {
+pub fn timer(duration: u32) -> String {
+    format!("{}:{:02}", duration / 60, duration % 60)
+}
+
+fn view_item(class: &str, item: &WorkoutStep, ix: usize) -> Node<Msg> {
     div![
-        class! {"item", class, if item.is_rest() {"rest"} else {"work"}},
-        div![class! {"reps"}, item.rep_str()],
-        div![class! {"duration"}, item.dur_str()],
+        class! {"item", class, "work"},
+        div![class! {"duration"}, item.duration.map(timer)],
         &item.name,
         ev(Ev::Click, move |_| imsg(InternalMsg::ChangeItem(ix)))
     ]
 }
-fn view_list_item(ix: usize, item: &FlatStatus, active_ix: usize) -> Node<Msg> {
+fn view_list_item(ix: usize, item: &WorkoutStep, active_ix: usize) -> Node<Msg> {
     li![
-        class! {if item.is_rest() {"rest"} else {"work"}
+        class! {"work",
         if active_ix > ix { "done" } else if active_ix == ix {"active"} else {"future"}},
         ev(Ev::Click, move |_| imsg(InternalMsg::ChangeItem(ix))),
-        span![class! {"desc"}, format!("{} {}", item.rep_str(), item.name)],
-        span![class! {"time"}, item.dur_str()]
+        span![class! {"desc"}, &item.name],
+        span![class! {"time"}, item.total_duration().map(timer)]
+    ]
+}
+
+fn view_item_background(item: &WorkoutStep) -> Node<Msg> {
+    let rb = item.rest_before;
+    let ra = item.rest_after;
+    let d = item.duration.unwrap_or(2 * (ra + rb));
+    div![
+        class! ["background"],
+        style! {"grid-template-columns" => format!("{}fr {}fr {}fr", rb,d,ra)},
+        div![class!["rest"]],
+        div![class!["work"]],
+        div![class!["rest"]],
     ]
 }
 
 fn view_workout(model: &Model) -> Node<Msg> {
-    let current = model.current_routine_item().expect("Expected OK routine");
-    let next = model.get_routine_item(model.routine_ix + 1).unwrap();
+    let curr_ix = model.current_routine_ix().expect("current ix");
+    let current = model.get_routine_item(curr_ix).expect("Expected OK routine");
+    let next = model.get_routine_item(curr_ix + 1).expect("Next routine item");
     let time = match current.duration {
         None => model.elapsed(),
         Some(d) => model.get_second_adjust() + (d as f64) - model.elapsed(),
-    } as u64;
+    } as u32;
     let items = model.routine.as_ref().expect("Expected OK routine");
     div![
         // --- Seconds ---
         div![
             class! {"workout"},
             div![
-                class! {"time", if current.is_rest() {"rest"} else {"work"}},
+                view_item_background(current),
+                class! {"time"},
                 svg![
                     attrs![At::ViewBox=>"0 0 43 18"],
                     style![St::Width=>"100%"],
                     text![
                         attrs![At::X=>"21", At::Y=>"14.5"],
                         style!["text-anchor"=>"middle"],
-                        workout::timer(time)
+                        timer(time)
                     ]
                 ],
                 //workout::timer(time),
                 ev(Ev::Click, |_| imsg(InternalMsg::Go))
             ],
-            view_item("curr", current, model.routine_ix),
-            view_item("next", next, model.routine_ix + 1),
+            view_item("curr", current, curr_ix),
+            view_item("next", next, curr_ix + 1),
             ul![
                 class! {"workout-list"},
                 items
                     .iter()
                     .enumerate()
-                    .filter(|(_, x)| !x.is_rest())
-                    .map(|(ix, i)| view_list_item(ix, i, model.routine_ix)),
+                    .map(|(ix, i)| view_list_item(ix, i, curr_ix)),
                 li![
                     "Back to Config",
                     ev(Ev::Click, |_| imsg(InternalMsg::ToConfig))

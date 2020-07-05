@@ -9,6 +9,15 @@
         background-color: hsl(0, 0%, 95%);
         font-family: sans-serif;
       }
+      .background {
+        display: grid;
+        position: absolute;
+        top:0;
+        bottom: 0;
+        left:0;
+        right:0;
+        z-index: -2;
+      }
       .config {
         padding: 10px;
         display: grid;
@@ -63,6 +72,9 @@
       div.time {
         grid-area: time;
         font-variant-numeric: tabular-nums;
+      }
+      .item, .time {
+        position:relative;
       }
       .item {
         padding: 1em;

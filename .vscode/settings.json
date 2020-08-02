@@ -1,0 +1,15 @@
+{
+    "cSpell.words": [
+        "backoff",
+        "bindgen",
+        "decodable",
+        "encodable",
+        "mqtt",
+        "mqttdashboard",
+        "reconnector",
+        "socket",
+        "wasm",
+        "web",
+        "web socket reconnector"
+    ]
+}

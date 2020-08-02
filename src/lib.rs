@@ -1,14 +1,17 @@
 use js_sys;
 use seed::{prelude::*, *};
-use wasm_bindgen::prelude::*;
+use serde::{Deserialize, Serialize};
 use web_sys;
 use web_sys::AudioContext;
 
 mod workout;
 use workout::*;
+mod mqtt_websocket;
 mod routine;
 
 use lazy_static::lazy_static;
+
+use ulid::Ulid;
 
 // ------ ------
 //     Model
@@ -18,12 +21,15 @@ enum RunningState {
     PausedAfter(f64),
     Configure,
 }
+
+const TOPIC_PREFIX: &str = "/xcvyunaizrsemkt/timer-app/test";
 struct Model {
     config: String,
     routine: Result<Vec<FlatStatus>, String>,
     state: RunningState,
     routine_ix: usize,
     audio_ctx: Option<AudioContext>,
+    mqtt_connection: mqtt_websocket::Model<AppMsg>,
 }
 
 impl Model {
@@ -54,16 +60,19 @@ impl Model {
 
 impl Default for Model {
     fn default() -> Self {
-        let mctx = web_sys::AudioContext::new().ok();
-        let mut s = Self {
+        let mut a = Self {
             state: RunningState::Configure,
             config: routine::SEVEN.to_owned(),
             routine: Err("Not compiled yet".to_owned()),
             routine_ix: 0,
-            audio_ctx: mctx,
+            audio_ctx: web_sys::AudioContext::new().ok(),
+            mqtt_connection: mqtt_websocket::Model::new(
+                "wss://test.mosquitto.org:8081/mqtt",
+                TOPIC_PREFIX,
+            ),
         };
-        s.routine = s.compile_config();
-        s
+        a.routine = a.compile_config();
+        return a;
     }
 }
 
@@ -109,61 +118,39 @@ impl Model {
 //    Update
 // ------ ------
 
-#[derive(Clone)]
-enum Msg {
-    Rendered(RenderInfo),
+#[derive(Serialize, Deserialize, Clone)]
+enum AppMsg {
     ChangeItem(usize),
     Go,
     ConfigChanged(String),
     ToConfig,
 }
 
-fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
+#[derive(Serialize, Deserialize)]
+struct MqttMsg {
+    msg: AppMsg,
+    sender: Ulid,
+}
+enum Msg {
+    Rendered(RenderInfo),
+    InternalMsg(AppMsg),
+    ExternalMsg(mqtt_websocket::ReceivedMsg<AppMsg>),
+    MqttMsg(mqtt_websocket::Msg),
+}
+fn imsg(im: AppMsg) -> Msg {
+    Msg::InternalMsg(im)
+}
+
+fn update_app(msg: AppMsg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
     match msg {
-        Msg::ConfigChanged(new_c) => {
-            model.config = new_c;
+        AppMsg::ConfigChanged(new_c) => {
+            model.config = new_c.clone(); //TODO: Why do I need to clone here?
             model.routine = model.compile_config();
         }
-        Msg::ToConfig => {
+        AppMsg::ToConfig => {
             model.state = RunningState::Configure;
         }
-        Msg::Rendered(render_info) => {
-            if let Some(d) = model.current_routine_item().and_then(|x| x.duration) {
-                let elapsed = model.elapsed();
-                if elapsed > d as f64 {
-                    orders.send_msg(Msg::ChangeItem(model.routine_ix + 1));
-                }
-                if let Some(s) = render_info.timestamp_delta {
-                    let remaining_now = (d as f64) - elapsed;
-                    if remaining_now < 3. {
-                        let r: f64 = f64::from(s);
-                        let remaining_before = remaining_now + r / 1000.;
-                        let whole_rem_now = remaining_now as u64;
-                        let whole_rem_before = remaining_before as u64;
-                        if whole_rem_before != whole_rem_now {
-                            model.beep(0.1, 440.);
-                        }
-                    }
-                }
-            }
-            orders.after_next_render(Msg::Rendered);
-        }
-        Msg::ChangeItem(new_ix) => {
-            model.routine_ix = new_ix;
-            match model.state {
-                RunningState::RunningSince(_) => {
-                    model.state = RunningState::RunningSince(js_sys::Date::now());
-                    let item = model
-                        .current_routine_item()
-                        .expect("Should have workout item when trying to beep");
-                    let freq = if item.is_rest() { 440. } else { 880. };
-                    model.beep(0.2, freq);
-                }
-                RunningState::PausedAfter(_) => model.state = RunningState::PausedAfter(1.),
-                RunningState::Configure => (),
-            };
-        }
-        Msg::Go => {
+        AppMsg::Go => {
             model.beep(0.1, 880.);
             match model.state {
                 RunningState::RunningSince(start) => {
@@ -181,11 +168,68 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                 }
             }
         }
+        AppMsg::ChangeItem(new_ix) => {
+            model.routine_ix = new_ix;
+            match model.state {
+                RunningState::RunningSince(_) => {
+                    model.state = RunningState::RunningSince(js_sys::Date::now());
+                    let item = model
+                        .current_routine_item()
+                        .expect("Should have workout item when trying to beep");
+                    let freq = if item.is_rest() { 440. } else { 880. };
+                    model.beep(0.2, freq);
+                }
+                RunningState::PausedAfter(_) => model.state = RunningState::PausedAfter(1.),
+                RunningState::Configure => (),
+            };
+        }
+    }
+}
+
+fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
+    match msg {
+        Msg::InternalMsg(msg2) => {
+            model
+                .mqtt_connection
+                .send_msg(&mut orders.proxy(Msg::MqttMsg), &msg2);
+            update_app(msg2, model, orders);
+        }
+        Msg::ExternalMsg(msg2) => {
+            update_app(msg2.msg, model, orders);
+        }
+        Msg::Rendered(render_info) => {
+            if let Some(d) = model.current_routine_item().and_then(|x| x.duration) {
+                let elapsed = model.elapsed();
+                if elapsed > d as f64 {
+                    orders.send_msg(imsg(AppMsg::ChangeItem(model.routine_ix + 1)));
+                }
+                if let Some(s) = render_info.timestamp_delta {
+                    let remaining_now = (d as f64) - elapsed;
+                    if remaining_now < 3. {
+                        let r: f64 = f64::from(s);
+                        let remaining_before = remaining_now + r / 1000.;
+                        let whole_rem_now = remaining_now as u64;
+                        let whole_rem_before = remaining_before as u64;
+                        if whole_rem_before != whole_rem_now {
+                            model.beep(0.1, 440.);
+                        }
+                    }
+                }
+            }
+            orders.after_next_render(Msg::Rendered);
+        }
+        Msg::MqttMsg(m) => mqtt_websocket::Model::update(
+            m,
+            &mut model.mqtt_connection,
+            &mut orders.proxy(Msg::MqttMsg),
+        ),
     }
 }
 
 fn after_mount(_: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     orders.after_next_render(Msg::Rendered);
+    mqtt_websocket::connect(&mut orders.proxy(Msg::MqttMsg));
+    orders.subscribe(Msg::ExternalMsg);
     AfterMount::default()
 }
 
@@ -199,23 +243,23 @@ fn view_item(class: &str, item: &FlatStatus, ix: usize) -> Node<Msg> {
         div![class! {"reps"}, item.rep_str()],
         div![class! {"duration"}, item.dur_str()],
         &item.name,
-        ev(Ev::Click, move |_| Msg::ChangeItem(ix))
+        ev(Ev::Click, move |_| imsg(AppMsg::ChangeItem(ix)))
     ]
 }
 fn view_list_item(ix: usize, item: &FlatStatus, active_ix: usize) -> Node<Msg> {
     li![
         class! {if item.is_rest() {"rest"} else {"work"}
         if active_ix > ix { "done" } else if active_ix == ix {"active"} else {"future"}},
-        ev(Ev::Click, move |_| Msg::ChangeItem(ix)),
+        ev(Ev::Click, move |_| imsg(AppMsg::ChangeItem(ix))),
         span![class! {"desc"}, format!("{} {}", item.rep_str(), item.name)],
         span![class! {"time"}, item.dur_str()]
     ]
 }
 
 fn view_workout(model: &Model) -> Node<Msg> {
-    let curr = model.current_routine_item().expect("Expected OK routine");
+    let current = model.current_routine_item().expect("Expected OK routine");
     let next = model.get_routine_item(model.routine_ix + 1).unwrap();
-    let time = match curr.duration {
+    let time = match current.duration {
         None => model.elapsed(),
         Some(d) => model.get_second_adjust() + (d as f64) - model.elapsed(),
     } as u64;
@@ -225,7 +269,7 @@ fn view_workout(model: &Model) -> Node<Msg> {
         div![
             class! {"workout"},
             div![
-                class! {"time", if curr.is_rest() {"rest"} else {"work"}},
+                class! {"time", if current.is_rest() {"rest"} else {"work"}},
                 svg![
                     attrs![At::ViewBox=>"0 0 43 18"],
                     style![St::Width=>"100%"],
@@ -236,9 +280,9 @@ fn view_workout(model: &Model) -> Node<Msg> {
                     ]
                 ],
                 //workout::timer(time),
-                ev(Ev::Click, |_| Msg::Go)
+                ev(Ev::Click, |_| imsg(AppMsg::Go))
             ],
-            view_item("curr", curr, model.routine_ix),
+            view_item("curr", current, model.routine_ix),
             view_item("next", next, model.routine_ix + 1),
             ul![
                 class! {"workout-list"},
@@ -247,7 +291,7 @@ fn view_workout(model: &Model) -> Node<Msg> {
                     .enumerate()
                     .filter(|(_, x)| !x.is_rest())
                     .map(|(ix, i)| view_list_item(ix, i, model.routine_ix)),
-                li!["Back to Config", ev(Ev::Click, |_| Msg::ToConfig)]
+                li!["Back to Config", ev(Ev::Click, |_| imsg(AppMsg::ToConfig))]
             ]
         ],
     ]
@@ -256,10 +300,11 @@ fn view_config(model: &Model) -> Node<Msg> {
     div![
         class! {"config"},
         p![class! {"help"}, "Workout thingy. Config below is written in Dhall. Errors or start button on the right. In the main workout view, click the time at the top to pause/resume. Click any other item to jump to that item in the sequence."],
-        textarea![&model.config, input_ev(Ev::Input, Msg::ConfigChanged)],
+        textarea![&model.config, input_ev(Ev::Input, |x| imsg(AppMsg::ConfigChanged(x)))],
         match &model.routine {
             Err(s) => pre![class! {"error"}, s],
-            Ok(_) => button!["Start", ev(Ev::Click, |_| Msg::Go)],
+            Ok(_) => button!["Start", ev(Ev::Click, |_| imsg(AppMsg::Go))],
+
         }
     ]
 }

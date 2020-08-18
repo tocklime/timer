@@ -1,90 +1,67 @@
-use js_sys;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 use web_sys;
 use web_sys::AudioContext;
 
-mod workout;
-use workout::*;
 mod mqtt_websocket;
 mod routine;
-
-use lazy_static::lazy_static;
+mod workout;
 
 use ulid::Ulid;
+mod pages;
+mod subs;
 
+struct_urls!();
+impl<'a> Urls<'a> {
+    pub fn login(self) -> Url {
+        self.base_url()
+    }
+    pub fn config(self) -> Url {
+        self.base_url().add_path_part("config")
+    }
+    pub fn workout(self) -> Url {
+        self.base_url().add_path_part("workout")
+    }
+}
 // ------ ------
 //     Model
 // ------ ------
-enum RunningState {
-    RunningSince(f64),
-    PausedAfter(f64),
-    Configure,
+enum Page {
+    Login(pages::login::Model),
+    Config(pages::config::Model),
+    Workout(pages::workout::Model),
 }
 
-const TOPIC_PREFIX: &str = "/xcvyunaizrsemkt/timer-app/test";
 struct Model {
-    config: String,
-    routine: Result<Vec<FlatStatus>, String>,
-    state: RunningState,
-    routine_ix: usize,
+    page: Page,
     audio_ctx: Option<AudioContext>,
-    mqtt_connection: mqtt_websocket::Model<AppMsg>,
+    mqtt_connection: Option<mqtt_websocket::Model<AppMsg>>,
 }
-
-impl Model {
-    fn elapsed(&self) -> f64 {
-        let millis = match self.state {
-            RunningState::RunningSince(start) => js_sys::Date::now() - start,
-            RunningState::PausedAfter(p) => p,
-            RunningState::Configure => 0.,
-        };
-        millis / 1000.
-    }
-    fn get_second_adjust(&self) -> f64 {
-        match self.state {
-            RunningState::RunningSince(_) => 1.,
-            RunningState::PausedAfter(_) => 1.,
-            RunningState::Configure => 0.,
-        }
-    }
-    fn compile_config(&self) -> Result<Vec<FlatStatus>, String> {
-        let full = routine::TYPES.to_owned() + &self.config;
-        let comp = serde_dhall::from_str(&full)
-            .parse::<routine::Routine>()
-            .map_err(|e| format!("{}", e))?;
-        let fs = comp.to_full_workout()?;
-        Ok(fs)
-    }
-}
-
+const TOPIC_PREFIX: &str = "/xcvyunaizrsemkt/timer-app/test";
 impl Default for Model {
     fn default() -> Self {
-        let mut a = Self {
-            state: RunningState::Configure,
-            config: routine::SEVEN.to_owned(),
-            routine: Err("Not compiled yet".to_owned()),
-            routine_ix: 0,
+        Self {
+            page: Page::Login(pages::login::Model::init()),
             audio_ctx: web_sys::AudioContext::new().ok(),
-            mqtt_connection: mqtt_websocket::Model::new(
-                "wss://test.mosquitto.org:8081/mqtt",
-                TOPIC_PREFIX,
-            ),
-        };
-        a.routine = a.compile_config();
-        return a;
+            mqtt_connection: None,
+        }
     }
 }
-
-lazy_static! {
-    static ref END_STATUS: FlatStatus = FlatStatus {
-        name: "END".to_string(),
-        this_rep: 1,
-        total_reps: 1,
-        duration: None,
-    };
-}
 impl Model {
+    pub fn get_login(&self) -> &pages::login::Model {
+        match &self.page {
+            Page::Login(l) => l,
+            Page::Config(c) => &c.login,
+            Page::Workout(w) => &w.config.login,
+        }
+    }
+    pub fn get_config(&self) -> Option<&pages::config::Model> {
+        match &self.page {
+            Page::Login(_) => None,
+            Page::Config(c) => Some(c),
+            Page::Workout(w) => Some(&w.config),
+        }
+    }
     pub fn beep(&self, duration: f64, frequency: f32) -> Option<()> {
         if let Some(ctx) = &self.audio_ctx {
             let osc = ctx.create_oscillator().ok()?;
@@ -100,136 +77,112 @@ impl Model {
             None
         }
     }
-    pub fn get_routine_item(&self, ix: usize) -> Option<&FlatStatus> {
-        match &self.routine {
-            Ok(vec) => match vec.get(ix) {
-                None => Some(&END_STATUS),
-                x => x,
-            },
-            Err(_) => None,
-        }
-    }
-    pub fn current_routine_item(&self) -> Option<&FlatStatus> {
-        self.get_routine_item(self.routine_ix)
-    }
 }
 
 // ------ ------
 //    Update
 // ------ ------
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 enum AppMsg {
-    ChangeItem(usize),
-    Go,
-    ConfigChanged(String),
-    ToConfig,
+    LoginMsg(pages::login::Msg),
+    ConfigMsg(pages::config::Msg),
+    WorkoutMsg(pages::workout::Msg),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct MqttMsg {
     msg: AppMsg,
     sender: Ulid,
 }
 enum Msg {
-    Rendered(RenderInfo),
     InternalMsg(AppMsg),
     ExternalMsg(mqtt_websocket::ReceivedMsg<AppMsg>),
     MqttMsg(mqtt_websocket::Msg),
+    Rendered(RenderInfo),
+    HandleEvent(subs::Event),
 }
-fn imsg(im: AppMsg) -> Msg {
-    Msg::InternalMsg(im)
-}
+fn update_app(msg: AppMsg, model: &mut Model, orders: &mut impl Orders<AppMsg>) {
+    match (&mut model.page, &msg) {
+        (Page::Config(c), AppMsg::ConfigMsg(m)) => {
+            pages::config::update(m.clone(), c, &mut orders.proxy(AppMsg::ConfigMsg))
+        }
 
-fn update_app(msg: AppMsg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
-    match msg {
-        AppMsg::ConfigChanged(new_c) => {
-            model.config = new_c.clone(); //TODO: Why do I need to clone here?
-            model.routine = model.compile_config();
+        (Page::Login(l), AppMsg::LoginMsg(m)) => {
+            pages::login::update(m.clone(), l, &mut orders.proxy(AppMsg::LoginMsg))
         }
-        AppMsg::ToConfig => {
-            model.state = RunningState::Configure;
+        (Page::Workout(l), AppMsg::WorkoutMsg(m)) => {
+            pages::workout::update(m.clone(), l, &mut orders.proxy(AppMsg::WorkoutMsg))
         }
-        AppMsg::Go => {
-            model.beep(0.1, 880.);
-            match model.state {
-                RunningState::RunningSince(start) => {
-                    let done = js_sys::Date::now() - start;
-                    model.state = RunningState::PausedAfter(done);
-                }
-                RunningState::PausedAfter(done) => {
-                    let new_start = js_sys::Date::now() - done;
-                    model.state = RunningState::RunningSince(new_start);
-                }
-                RunningState::Configure => {
-                    if model.routine.is_ok() {
-                        model.state = RunningState::RunningSince(js_sys::Date::now());
-                    }
-                }
-            }
-        }
-        AppMsg::ChangeItem(new_ix) => {
-            model.routine_ix = new_ix;
-            match model.state {
-                RunningState::RunningSince(_) => {
-                    model.state = RunningState::RunningSince(js_sys::Date::now());
-                    let item = model
-                        .current_routine_item()
-                        .expect("Should have workout item when trying to beep");
-                    let freq = if item.is_rest() { 440. } else { 880. };
-                    model.beep(0.2, freq);
-                }
-                RunningState::PausedAfter(_) => model.state = RunningState::PausedAfter(1.),
-                RunningState::Configure => (),
-            };
-        }
+        _ => {}
     }
 }
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg {
         Msg::InternalMsg(msg2) => {
-            model
-                .mqtt_connection
-                .send_msg(&mut orders.proxy(Msg::MqttMsg), &msg2);
-            update_app(msg2, model, orders);
+            if let Some(x) = &mut model.mqtt_connection {
+                x.send_msg(&mut orders.proxy(Msg::MqttMsg), &msg2);
+            }
+            update_app(msg2, model, &mut orders.proxy(Msg::InternalMsg));
         }
         Msg::ExternalMsg(msg2) => {
-            update_app(msg2.msg, model, orders);
+            update_app(msg2.msg, model, &mut orders.proxy(Msg::InternalMsg));
         }
-        Msg::Rendered(render_info) => {
-            if let Some(d) = model.current_routine_item().and_then(|x| x.duration) {
-                let elapsed = model.elapsed();
-                if elapsed > d as f64 {
-                    orders.send_msg(imsg(AppMsg::ChangeItem(model.routine_ix + 1)));
-                }
-                if let Some(s) = render_info.timestamp_delta {
-                    let remaining_now = (d as f64) - elapsed;
-                    if remaining_now < 3. {
-                        let r: f64 = f64::from(s);
-                        let remaining_before = remaining_now + r / 1000.;
-                        let whole_rem_now = remaining_now as u64;
-                        let whole_rem_before = remaining_before as u64;
-                        if whole_rem_before != whole_rem_now {
-                            model.beep(0.1, 440.);
-                        }
-                    }
+        Msg::MqttMsg(m) => {
+            if let Some(mqtt) = &mut model.mqtt_connection {
+                mqtt_websocket::Model::update(m, mqtt, &mut orders.proxy(Msg::MqttMsg));
+            }
+        }
+        Msg::Rendered(_) => {
+            if let Page::Workout(x) = &mut model.page {
+                if let Some(b) = x.time_fn() {
+                    orders.notify(b);
                 }
             }
             orders.after_next_render(Msg::Rendered);
         }
-        Msg::MqttMsg(m) => mqtt_websocket::Model::update(
-            m,
-            &mut model.mqtt_connection,
-            &mut orders.proxy(Msg::MqttMsg),
-        ),
+        Msg::HandleEvent(e) => match e {
+            subs::Event::Connect => {
+                let login = model.get_login().clone();
+                model.mqtt_connection = Some(mqtt_websocket::Model::new(
+                    "wss://test.mosquitto.org:8081/mqtt",
+                    &format!("{}{}", TOPIC_PREFIX, login.room),
+                    &login.password,
+                ));
+                mqtt_websocket::connect(&mut orders.proxy(Msg::MqttMsg));
+                model.page = Page::Config(crate::pages::config::Model::init(login));
+            }
+            subs::Event::Disconnect => {
+                let login = model.get_login().clone();
+                model.mqtt_connection = None;
+                model.page = Page::Login(login);
+            }
+            subs::Event::StartWorkout => {
+                if let Some(c) = model.get_config() {
+                    if let Ok(r) = &c.routine {
+                        model.page =
+                            Page::Workout(crate::pages::workout::Model::init(c.clone(), r.clone()))
+                    }
+                }
+            }
+            subs::Event::ToConfig => {
+                if let Some(c) = model.get_config() {
+                    model.page = Page::Config(c.clone());
+                }
+            }
+            subs::Event::Beep { freq, dur } => {
+                model.beep(dur, freq);
+            }
+        },
     }
 }
 
 fn after_mount(_: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
     orders.after_next_render(Msg::Rendered);
-    mqtt_websocket::connect(&mut orders.proxy(Msg::MqttMsg));
+    //mqtt_websocket::connect(&mut orders.proxy(Msg::MqttMsg));
     orders.subscribe(Msg::ExternalMsg);
+    orders.subscribe(Msg::HandleEvent);
     AfterMount::default()
 }
 
@@ -237,85 +190,16 @@ fn after_mount(_: Url, orders: &mut impl Orders<Msg>) -> AfterMount<Model> {
 //     View
 // ------ ------
 
-fn view_item(class: &str, item: &FlatStatus, ix: usize) -> Node<Msg> {
-    div![
-        class! {"item", class, if item.is_rest() {"rest"} else {"work"}},
-        div![class! {"reps"}, item.rep_str()],
-        div![class! {"duration"}, item.dur_str()],
-        &item.name,
-        ev(Ev::Click, move |_| imsg(AppMsg::ChangeItem(ix)))
-    ]
-}
-fn view_list_item(ix: usize, item: &FlatStatus, active_ix: usize) -> Node<Msg> {
-    li![
-        class! {if item.is_rest() {"rest"} else {"work"}
-        if active_ix > ix { "done" } else if active_ix == ix {"active"} else {"future"}},
-        ev(Ev::Click, move |_| imsg(AppMsg::ChangeItem(ix))),
-        span![class! {"desc"}, format!("{} {}", item.rep_str(), item.name)],
-        span![class! {"time"}, item.dur_str()]
-    ]
-}
-
-fn view_workout(model: &Model) -> Node<Msg> {
-    let current = model.current_routine_item().expect("Expected OK routine");
-    let next = model.get_routine_item(model.routine_ix + 1).unwrap();
-    let time = match current.duration {
-        None => model.elapsed(),
-        Some(d) => model.get_second_adjust() + (d as f64) - model.elapsed(),
-    } as u64;
-    let items = model.routine.as_ref().expect("Expected OK routine");
-    div![
-        // --- Seconds ---
-        div![
-            class! {"workout"},
-            div![
-                class! {"time", if current.is_rest() {"rest"} else {"work"}},
-                svg![
-                    attrs![At::ViewBox=>"0 0 43 18"],
-                    style![St::Width=>"100%"],
-                    text![
-                        attrs![At::X=>"21", At::Y=>"14.5"],
-                        style!["text-anchor"=>"middle"],
-                        workout::timer(time)
-                    ]
-                ],
-                //workout::timer(time),
-                ev(Ev::Click, |_| imsg(AppMsg::Go))
-            ],
-            view_item("curr", current, model.routine_ix),
-            view_item("next", next, model.routine_ix + 1),
-            ul![
-                class! {"workout-list"},
-                items
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, x)| !x.is_rest())
-                    .map(|(ix, i)| view_list_item(ix, i, model.routine_ix)),
-                li!["Back to Config", ev(Ev::Click, |_| imsg(AppMsg::ToConfig))]
-            ]
-        ],
-    ]
-}
-fn view_config(model: &Model) -> Node<Msg> {
-    div![
-        class! {"config"},
-        p![class! {"help"}, "Workout thingy. Config below is written in Dhall. Errors or start button on the right. In the main workout view, click the time at the top to pause/resume. Click any other item to jump to that item in the sequence."],
-        textarea![&model.config, input_ev(Ev::Input, |x| imsg(AppMsg::ConfigChanged(x)))],
-        match &model.routine {
-            Err(s) => pre![class! {"error"}, s],
-            Ok(_) => button!["Start", ev(Ev::Click, |_| imsg(AppMsg::Go))],
-
-        }
-    ]
-}
-
-fn view(model: &Model) -> Node<Msg> {
-    match model.state {
-        RunningState::Configure => view_config(model),
-        _ => view_workout(model),
+fn view_app(model: &Model) -> Node<AppMsg> {
+    match &model.page {
+        Page::Login(m) => pages::login::view(m).map_msg(AppMsg::LoginMsg),
+        Page::Config(m) => pages::config::view(m).map_msg(AppMsg::ConfigMsg),
+        Page::Workout(m) => pages::workout::view(m).map_msg(AppMsg::WorkoutMsg),
     }
 }
-
+fn view(model: &Model) -> Node<Msg> {
+    view_app(model).map_msg(Msg::InternalMsg)
+}
 // ------ ------
 //     Start
 // ------ ------

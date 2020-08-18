@@ -13,7 +13,7 @@ pub struct WorkoutItem {
     content: Work,
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize,Clone)]
 pub struct FlatStatus {
     pub name: String,
     pub this_rep: u32,

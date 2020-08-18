@@ -5,7 +5,7 @@ use mqtt::{
 use packet::Packet;
 use seed::{log, prelude::*};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{io::Cursor, marker::PhantomData};
+use std::{io::Cursor, marker::PhantomData, fmt::Debug};
 use ulid::Ulid;
 
 pub enum Msg {
@@ -24,7 +24,7 @@ where
 {
     pub msg: T,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize,Debug)]
 struct MqttWrap {
     msg: String,
     sender: Ulid,
@@ -38,13 +38,14 @@ where
     topic: String,
     web_socket: Option<WebSocket>,
     web_socket_reconnector: Option<StreamHandle>,
+    password: String,
     phantom: PhantomData<T>,
 }
 impl<T> Model<T>
 where
-    T: 'static + DeserializeOwned + Clone + Serialize,
+    T: 'static + DeserializeOwned + Clone + Serialize + Debug,
 {
-    pub fn new(url: &str, topic: &str) -> Self {
+    pub fn new(url: &str, topic: &str, password: &str) -> Self {
         let id = Ulid::new();
         Self {
             id,
@@ -52,6 +53,7 @@ where
             topic: topic.to_owned(),
             web_socket: None,
             web_socket_reconnector: None,
+            password: password.to_owned(),
             phantom: PhantomData,
         }
     }
@@ -87,12 +89,15 @@ where
             Msg::WebSocketSend(pkt) => {
                 let mut buffer = Vec::new();
                 pkt.encode(&mut buffer).unwrap();
-                model
-                    .web_socket
-                    .as_ref()
-                    .unwrap()
-                    .send_bytes(&buffer)
-                    .unwrap();
+                match model.web_socket.as_ref() {
+                    Some(s) => { 
+                        match s.send_bytes(&buffer) {
+                            Ok(_) => {}
+                            Err(e) => { log!("Failed to send",e)}
+                        }
+                    }
+                    None => { log!("Cannot send message: no websocket.")}
+                }
             }
             Msg::WebSocketOpened => {
                 model.web_socket_reconnector = None;
@@ -131,7 +136,11 @@ where
                         let bytes = msg.bytes().await.unwrap();
                         let mut dec_buf = Cursor::new(&bytes);
                         let decoded = mqtt::packet::VariablePacket::decode(&mut dec_buf).unwrap();
-                        log!(format!("Decoded: {:?}", decoded));
+                        if let packet::VariablePacket::PublishPacket(_) = decoded {
+
+                        } else {
+                            log!("incoming packet: ", decoded);
+                        }
                         match decoded {
                             packet::VariablePacket::ConnectPacket(_) => None,
                             packet::VariablePacket::ConnackPacket(_) => Some(Msg::MqttSubscribe),
@@ -141,7 +150,10 @@ where
                                 let as_mqtt_wrap: MqttWrap = serde_json::from_str(as_str).unwrap();
                                 if as_mqtt_wrap.sender != my_id {
                                     let as_t: T = serde_json::from_str(&as_mqtt_wrap.msg).unwrap();
+                                    log!("Decoded mqtt message",as_t);
                                     ac.notify(ReceivedMsg { msg: as_t });
+                                }else {
+                                    log!("ignored incoming message from self");
                                 }
                                 None
                             }

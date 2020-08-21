@@ -4,7 +4,6 @@ use seed::{*, prelude::*};
 
 #[derive(Clone)]
 pub struct Model {
-    pub login : crate::pages::login::Model,
     pub config: String,
     pub routine: Result<Vec<FlatStatus>, String>,
 }
@@ -17,9 +16,8 @@ pub enum Msg {
 }
 
 impl Model {
-    pub fn init(login: crate::pages::login::Model) -> Self {
+    pub fn init() -> Self {
         let mut m = Self {
-            login,
             config: routine::SEVEN.to_owned(),
             routine: Err("Not compiled yet".to_owned()),
         };

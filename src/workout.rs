@@ -21,8 +21,8 @@ pub struct FlatStatus {
     pub duration: Option<u32>,
 }
 
-pub fn timer(duration: u64) -> String {
-    format!("{}:{:02}", duration / 60, duration % 60)
+pub fn timer(duration: i64) -> String {
+    format!("{}{}:{:02}", if duration < 0 {"-"} else {""}, duration.abs() / 60, duration.abs() % 60)
 }
 
 impl FlatStatus {

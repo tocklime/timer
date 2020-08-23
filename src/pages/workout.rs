@@ -1,6 +1,7 @@
 use crate::{routine, workout::FlatStatus};
 use seed::{prelude::*, *};
 
+use chrono::Duration;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +14,7 @@ pub struct PublishedModel {
 pub struct Model {
     published: PublishedModel,
     pub routine: Result<Vec<FlatStatus>, String>,
-    last_update: f64,
+    last_update: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -23,12 +24,12 @@ pub enum Msg {
     ToConfig,
     ConfigChanged(String),
     Disconnect,
-    ExternalUpdate(PublishedModel)
+    ExternalUpdate(PublishedModel),
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 enum RunningState {
-    RunningSince(f64),
-    PausedAfter(f64),
+    RunningSince(i64),
+    PausedAfter(i64),
     Config,
 }
 lazy_static! {
@@ -49,8 +50,8 @@ impl PublishedModel {
     }
 }
 impl Model {
-    pub fn init() -> Self {
-        let now = js_sys::Date::now();
+    pub fn init(context: &crate::Context) -> Self {
+        let now = context.current_time().timestamp_millis();
         let mut m = Self {
             published: PublishedModel::init(),
             routine: Err("Not compiled yet".into()),
@@ -67,57 +68,64 @@ impl Model {
         let fs = comp.to_full_workout()?;
         Ok(fs)
     }
-    fn elapsed(&self) -> f64 {
-        let millis = match self.published.state {
-            RunningState::RunningSince(start) => {
-                if self.last_update > start {
-                    self.last_update - start
-                } else {
-                    log!("XXX", self.last_update, start);
-                    0.
-                }
+    fn elapsed_millis(&self) -> i64 {
+        match self.published.state {
+            RunningState::RunningSince(start) if self.last_update > start => {
+                self.last_update - start
             }
+            RunningState::RunningSince(_) => 0, //Start is in the future. Sad times.
             RunningState::PausedAfter(p) => p,
-            RunningState::Config => 0.,
-        };
-        millis / 1000.
+            RunningState::Config => 0,
+        }
     }
     pub fn get_routine_item(&self, ix: usize) -> &FlatStatus {
-        self.routine.as_ref().ok().and_then(|z| z.get(ix)).unwrap_or(&END_STATUS)
+        self.routine
+            .as_ref()
+            .ok()
+            .and_then(|z| z.get(ix))
+            .unwrap_or(&END_STATUS)
     }
-    pub fn current_routine_item(&self) -> &FlatStatus {
-        self.get_routine_item(self.published.routine_ix)
+    pub fn current_routine_item(&self) -> Option<&FlatStatus> {
+        match self.published.state {
+            RunningState::Config => None,
+            _ => Some(self.get_routine_item(self.published.routine_ix))
+        }
     }
-    pub fn goto_item(&mut self, new_ix: usize) -> Vec<crate::subs::Event> {
+    pub fn goto_item(
+        &mut self,
+        new_ix: usize,
+        context: &crate::Context,
+    ) -> Vec<crate::subs::Event> {
         self.published.routine_ix = new_ix;
         let mut evs = vec![crate::subs::Event::PublishedStateUpdated];
         match self.published.state {
             RunningState::RunningSince(_) => {
-                self.published.state = RunningState::RunningSince(js_sys::Date::now());
-                let item = self.current_routine_item();
+                self.published.state =
+                    RunningState::RunningSince(context.current_time().timestamp_millis());
+                let item = self.current_routine_item().expect("Valid workout item when running");
                 let freq = if item.is_rest() { 440. } else { 880. };
                 evs.push(crate::subs::Event::Beep { freq, dur: 0.2 })
             }
             RunningState::PausedAfter(_) => {
-                self.published.state = RunningState::PausedAfter(1.);
+                self.published.state = RunningState::PausedAfter(0);
             }
-            RunningState::Config => {},
+            RunningState::Config => {}
         }
         evs
     }
-    pub fn time_fn(&mut self) -> Vec<crate::subs::Event> {
-        if let Some(d) = self.current_routine_item().duration {
-            let elapsed = self.elapsed();
-            let remaining = d as f64 - elapsed;
-            if remaining <= 0. {
-                self.goto_item(self.published.routine_ix + 1)
+    pub fn time_fn(&mut self, context: &crate::Context) -> Vec<crate::subs::Event> {
+        let old_elapsed = self.elapsed_millis();
+        self.last_update = context.current_time().timestamp_millis();
+        if let Some(d) = self.current_routine_item().and_then(|x| x.duration) {
+            let elapsed = self.elapsed_millis();
+            let remaining_millis = d as i64 * 1000 - elapsed;
+            if remaining_millis <= 0 {
+                return self.goto_item(self.published.routine_ix + 1, context)
             } else {
-                self.last_update = js_sys::Date::now();
-                let new_elapsed = self.elapsed();
-                let remaining_now = d as f64 - new_elapsed;
-                if remaining_now < 3. {
-                    let whole_rem_now = remaining_now as u64;
-                    let whole_rem_before = remaining as u64;
+                let remaining_now = d as i64 * 1000 - elapsed;
+                if remaining_now < 3000 {
+                    let whole_rem_now = remaining_now / 1000;
+                    let whole_rem_before = (d as i64 * 1000 - old_elapsed) / 1000;
                     if whole_rem_before != whole_rem_now {
                         return vec![crate::subs::Event::Beep {
                             freq: 440.,
@@ -125,15 +133,17 @@ impl Model {
                         }];
                     }
                 }
-                Vec::new()
             }
-        } else {
-            self.last_update = js_sys::Date::now();
-            Vec::new()
-        }
+        } 
+        Vec::new()
     }
 }
-pub fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
+pub fn update(
+    msg: Msg,
+    model: &mut Model,
+    orders: &mut impl Orders<Msg>,
+    context: &crate::Context,
+) {
     match msg {
         Msg::Go => {
             orders.notify(crate::subs::Event::Beep {
@@ -142,22 +152,24 @@ pub fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             });
             match model.published.state {
                 RunningState::RunningSince(start) => {
-                    let done = js_sys::Date::now() - start;
-                    model.published.state = RunningState::PausedAfter(done);
+                    let done = context.current_time() - Duration::milliseconds(start);
+                    model.published.state = RunningState::PausedAfter(done.timestamp_millis());
                 }
                 RunningState::PausedAfter(done) => {
-                    let new_start = js_sys::Date::now() - done;
-                    model.published.state = RunningState::RunningSince(new_start);
+                    let new_start = context.current_time() - Duration::milliseconds(done);
+                    model.published.state =
+                        RunningState::RunningSince(new_start.timestamp_millis());
                 }
                 RunningState::Config => {
                     model.published.routine_ix = 0;
-                    model.published.state = RunningState::RunningSince(js_sys::Date::now());
+                    model.published.state =
+                        RunningState::RunningSince(context.current_time().timestamp_millis());
                 }
             }
             orders.notify(crate::subs::Event::PublishedStateUpdated);
         }
         Msg::ChangeItem(new_ix) => {
-            for x in model.goto_item(new_ix){
+            for x in model.goto_item(new_ix, context) {
                 orders.notify(x);
             }
         }
@@ -167,6 +179,7 @@ pub fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         }
         Msg::ConfigChanged(c) => {
             model.published.config = c;
+            model.routine = model.compile_config();
             orders.notify(crate::subs::Event::PublishedStateUpdated);
         }
         Msg::Disconnect => {
@@ -203,12 +216,31 @@ fn view_list_item(ix: usize, item: &FlatStatus, active_ix: usize) -> Node<Msg> {
 }
 
 pub fn view(model: &Model) -> Node<Msg> {
-    let current = model.current_routine_item();
+    if let RunningState::Config = model.published.state {
+        view_config(model)
+    } else {
+        view_running(model)
+    }
+}
+fn view_config(model: &Model) -> Node<Msg> {
+    div![
+        class! {"config"},
+        p![class! {"help"}, "Workout thingy. Config below is written in Dhall. Errors or start button on the right. In the main workout view, click the time at the top to pause/resume. Click any other item to jump to that item in the sequence."],
+        textarea![&model.published.config, input_ev(Ev::Input, Msg::ConfigChanged)],
+        match &model.routine {
+            Err(s) => pre![class! {"error"}, s],
+            Ok(_) => button!["Start", ev(Ev::Click, |_| Msg::Go)],
+        }
+    ]
+}
+fn view_running(model: &Model) -> Node<Msg> {
+    let current = model.current_routine_item().expect("Valid routine item in view_running");
     let next = model.get_routine_item(model.published.routine_ix + 1);
     let time = match current.duration {
-        None => model.elapsed(),
-        Some(d) => ((d as f64) - model.elapsed()).ceil(),
-    } as u64;
+        None => model.elapsed_millis() / 1000,
+        // see https://stackoverflow.com/a/17974
+        Some(d) => ((1000 * d as i64) - model.elapsed_millis() + 999) / 1000,
+    };
     let items = model.routine.as_ref().expect("good routine");
     div![
         // --- Seconds ---

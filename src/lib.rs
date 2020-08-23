@@ -11,7 +11,7 @@ use serde_json::Value;
 use ulid::Ulid;
 mod pages;
 mod subs;
-use chrono::{Utc,DateTime};
+use chrono::{DateTime, Utc, Duration};
 
 struct_urls!();
 impl<'a> Urls<'a> {
@@ -33,13 +33,24 @@ enum Page {
     Workout(pages::workout::Model),
 }
 
+pub struct Context {
+    server_time_delta: i64,
+    server_deltas: Vec<i64>,
+}
+
+impl Context {
+    pub fn current_time(&self) -> DateTime<Utc> {
+        let local = Utc::now();
+        let offset = Duration::milliseconds(self.server_time_delta);
+        local + offset
+    }
+}
 struct Model {
     page: Page,
     login: pages::login::Model,
     audio_ctx: Option<AudioContext>,
     mqtt_connection: Option<mqtt_websocket::Model<crate::pages::workout::PublishedModel>>,
-    server_time_delta: i64,
-    server_deltas: Vec<i64>,
+    context: Context,
 }
 const TOPIC_PREFIX: &str = "/xcvyunaizrsemkt/timer-app/test";
 
@@ -50,8 +61,10 @@ impl Default for Model {
             login: pages::login::Model::init(),
             audio_ctx: web_sys::AudioContext::new().ok(),
             mqtt_connection: None,
-            server_time_delta: 0,
-            server_deltas: Vec::new(),
+            context: Context {
+                server_time_delta: 0,
+                server_deltas: Vec::new(),
+            },
         }
     }
 }
@@ -104,7 +117,7 @@ fn update_app(msg: AppMsg, model: &mut Model, orders: &mut impl Orders<AppMsg>) 
             &mut orders.proxy(AppMsg::LoginMsg),
         ),
         (Page::Workout(l), AppMsg::WorkoutMsg(m)) => {
-            pages::workout::update(m.clone(), l, &mut orders.proxy(AppMsg::WorkoutMsg))
+            pages::workout::update(m.clone(), l, &mut orders.proxy(AppMsg::WorkoutMsg),&model.context)
         }
         _ => {}
     }
@@ -117,7 +130,12 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         }
         Msg::ExternalMsg(msg2) => {
             if let Page::Workout(m) = &mut model.page {
-                crate::pages::workout::update(crate::pages::workout::Msg::ExternalUpdate(msg2.msg), m, &mut orders.proxy(Msg::InternalMsg).proxy(AppMsg::WorkoutMsg));
+                crate::pages::workout::update(
+                    crate::pages::workout::Msg::ExternalUpdate(msg2.msg),
+                    m,
+                    &mut orders.proxy(Msg::InternalMsg).proxy(AppMsg::WorkoutMsg),
+                    &model.context
+                );
             }
         }
         Msg::MqttMsg(m) => {
@@ -127,7 +145,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
         }
         Msg::Rendered(_) => {
             if let Page::Workout(x) = &mut model.page {
-                for ev in x.time_fn() {
+                for ev in x.time_fn(&model.context) {
                     orders.notify(ev);
                 }
             }
@@ -137,11 +155,11 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             subs::Event::Connect => {
                 model.mqtt_connection = Some(mqtt_websocket::Model::new(
                     "wss://test.mosquitto.org:8081/mqtt",
-                    &format!("{}{}", TOPIC_PREFIX, &model.login.room),
+                    &format!("{}/{}", TOPIC_PREFIX, &model.login.room),
                     &model.login.password,
                 ));
                 mqtt_websocket::connect(&mut orders.proxy(Msg::MqttMsg));
-                model.page = Page::Workout(crate::pages::workout::Model::init());
+                model.page = Page::Workout(crate::pages::workout::Model::init(&model.context));
             }
             subs::Event::Disconnect => {
                 model.mqtt_connection = None;
@@ -150,17 +168,16 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             subs::Event::Beep { freq, dur } => {
                 model.beep(dur, freq);
             }
-            subs::Event::PublishedStateUpdated => {
-            }
+            subs::Event::PublishedStateUpdated => {}
         },
         Msg::SetServerDelta(d) => {
-            model.server_deltas.push(d);
-            model.server_time_delta =
-                model.server_deltas.iter().sum::<i64>() / model.server_deltas.len() as i64;
-            if model.server_deltas.len() < 5 {
+            model.context.server_deltas.push(d);
+            model.context.server_time_delta =
+                model.context.server_deltas.iter().sum::<i64>() / model.context.server_deltas.len() as i64;
+            if model.context.server_deltas.len() < 5 {
                 orders.perform_cmd(request_time());
             } else {
-                log!(model.server_time_delta);
+                log!(model.context.server_time_delta);
             }
         }
     }
@@ -179,7 +196,9 @@ async fn request_time() -> Option<Msg> {
     let text = res.text().await.ok()?;
     let server_json: Value = serde_json::from_str(&text).ok()?;
     let server_now_str = server_json["utc_datetime"].as_str()?;
-    let server_now = DateTime::parse_from_rfc3339(server_now_str).ok()?.with_timezone(&Utc);
+    let server_now = DateTime::parse_from_rfc3339(server_now_str)
+        .ok()?
+        .with_timezone(&Utc);
     let one_way_time = (now - before) / 2;
     let diff = server_now - now + one_way_time;
     Some(Msg::SetServerDelta(diff.num_milliseconds()))

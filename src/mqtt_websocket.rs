@@ -2,20 +2,21 @@ use mqtt::{
     packet::{self, ConnectPacket, PingrespPacket, VariablePacket},
     Decodable, Encodable, TopicName,
 };
-use packet::Packet;
+use packet::{Packet, PingreqPacket};
 use seed::{log, prelude::*};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{io::Cursor, marker::PhantomData, fmt::Debug};
+use std::{fmt::Debug, io::Cursor, marker::PhantomData};
 use ulid::Ulid;
 
 pub enum Msg {
     WebSocketOpened,
     WebSocketClosed(CloseEvent),
     WebSocketMsgReceived(WebSocketMessage),
+    WebSocketBytesReceived(Vec<u8>),
     WebSocketFailed,
     ReconnectWebSocket(usize),
-    WebSocketSend(mqtt::packet::VariablePacket),
     MqttSubscribe,
+    KeepAlive,
 }
 #[derive(Clone)]
 pub struct ReceivedMsg<T>
@@ -24,7 +25,7 @@ where
 {
     pub msg: T,
 }
-#[derive(Serialize, Deserialize,Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct MqttWrap {
     msg: String,
     sender: Ulid,
@@ -40,11 +41,21 @@ where
     web_socket_reconnector: Option<StreamHandle>,
     password: String,
     phantom: PhantomData<T>,
+    keep_alive_handle: Option<StreamHandle>,
 }
 impl<T> Model<T>
 where
     T: 'static + DeserializeOwned + Clone + Serialize + Debug,
 {
+    pub fn encrypt(&self, data: &[u8]) -> Vec<u8> {
+        //TODO: Implement encryption based on self.password.
+        return data.to_vec();
+    }
+    pub fn decrypt(&self, data: &[u8]) -> Vec<u8> {
+        //TODO: Implement decryption based on self.password.
+        return data.to_vec();
+    }
+
     pub fn new(url: &str, topic: &str, password: &str) -> Self {
         let id = Ulid::new();
         Self {
@@ -55,6 +66,7 @@ where
             web_socket_reconnector: None,
             password: password.to_owned(),
             phantom: PhantomData,
+            keep_alive_handle: None,
         }
     }
     pub fn create_websocket(&mut self, orders: &impl Orders<Msg>) -> WebSocket {
@@ -68,36 +80,35 @@ where
             .unwrap();
         return ws;
     }
-    pub fn send_msg(&self, orders: &mut impl Orders<Msg>, msg : &T) {
-        let qos = mqtt::packet::QoSWithPacketIdentifier::new(
-            mqtt::QualityOfService::Level0,
-            1,
-        );
+    pub fn send_msg(&self, msg: &T) {
+        let qos = mqtt::packet::QoSWithPacketIdentifier::new(mqtt::QualityOfService::Level0, 1);
         let json1 = serde_json::to_string(msg).unwrap();
         let mqtt_msg = MqttWrap {
             msg: json1,
             sender: self.id,
         };
         let json2 = serde_json::to_string(&mqtt_msg).unwrap();
+        let encrypted = self.encrypt(&json2.as_bytes());
         let topic = TopicName::new(&self.topic).unwrap();
-        let pub_pkt = mqtt::packet::PublishPacket::new(topic, qos, json2);
-        orders.send_msg(Msg::WebSocketSend(VariablePacket::PublishPacket(pub_pkt)));
+        let pub_pkt = mqtt::packet::PublishPacket::new(topic, qos, encrypted);
+        self.send_pkt(VariablePacket::PublishPacket(pub_pkt));
+    }
+    pub fn send_pkt(&self, pkt: VariablePacket) {
+        let mut buffer = Vec::new();
+        pkt.encode(&mut buffer).unwrap();
+        match self.web_socket.as_ref() {
+            Some(s) => match s.send_bytes(&buffer) {
+                Ok(_) => {}
+                Err(e) => log!("Failed to send", e),
+            },
+            None => log!("Cannot send message: no websocket."),
+        }
     }
 
     pub fn update(msg: Msg, model: &mut Self, orders: &mut impl Orders<Msg>) {
         match msg {
-            Msg::WebSocketSend(pkt) => {
-                let mut buffer = Vec::new();
-                pkt.encode(&mut buffer).unwrap();
-                match model.web_socket.as_ref() {
-                    Some(s) => { 
-                        match s.send_bytes(&buffer) {
-                            Ok(_) => {}
-                            Err(e) => { log!("Failed to send",e)}
-                        }
-                    }
-                    None => { log!("Cannot send message: no websocket.")}
-                }
+            Msg::KeepAlive => {
+                model.send_pkt(VariablePacket::PingreqPacket(PingreqPacket::new()));
             }
             Msg::WebSocketOpened => {
                 model.web_socket_reconnector = None;
@@ -107,7 +118,7 @@ where
                 let mut con_pkt = ConnectPacket::new("MQTT", client_id);
                 con_pkt.set_keep_alive(30);
                 con_pkt.set_clean_session(true);
-                orders.send_msg(Msg::WebSocketSend(VariablePacket::ConnectPacket(con_pkt)));
+                model.send_pkt(VariablePacket::ConnectPacket(con_pkt));
             }
             Msg::WebSocketClosed(close_event) => {
                 log!("WS Closed");
@@ -121,59 +132,62 @@ where
                 let target = mqtt::TopicFilter::new(&model.topic).unwrap();
                 let qos = mqtt::QualityOfService::Level0;
                 let subpkt = mqtt::packet::SubscribePacket::new(1, vec![(target, qos)]);
-                orders.send_msg(Msg::WebSocketSend(VariablePacket::SubscribePacket(subpkt)));
+                model.send_pkt(VariablePacket::SubscribePacket(subpkt));
             }
             Msg::WebSocketMsgReceived(msg) => {
-                log!("WS Message!");
-
                 if msg.contains_text() {
                     log!(format!("Text message: {}", msg.text().unwrap()));
                 } else if msg.contains_blob() {
-                    log!(format!("blob message: {:?}", msg));
-                    let my_id = model.id;
-                    let ac = orders.clone_app();
                     orders.perform_cmd(async move {
                         let bytes = msg.bytes().await.unwrap();
-                        let mut dec_buf = Cursor::new(&bytes);
-                        let decoded = mqtt::packet::VariablePacket::decode(&mut dec_buf).unwrap();
-                        if let packet::VariablePacket::PublishPacket(_) = decoded {
-
-                        } else {
-                            log!("incoming packet: ", decoded);
-                        }
-                        match decoded {
-                            packet::VariablePacket::ConnectPacket(_) => None,
-                            packet::VariablePacket::ConnackPacket(_) => Some(Msg::MqttSubscribe),
-                            packet::VariablePacket::PublishPacket(p) => {
-                                //incoming message. try to decode.
-                                let as_str = std::str::from_utf8(p.payload_ref()).unwrap();
-                                let as_mqtt_wrap: MqttWrap = serde_json::from_str(as_str).unwrap();
-                                if as_mqtt_wrap.sender != my_id {
-                                    let as_t: T = serde_json::from_str(&as_mqtt_wrap.msg).unwrap();
-                                    log!("Decoded mqtt message",as_t);
-                                    ac.notify(ReceivedMsg { msg: as_t });
-                                }else {
-                                    log!("ignored incoming message from self");
-                                }
-                                None
-                            }
-                            packet::VariablePacket::PubackPacket(_) => None,
-                            packet::VariablePacket::PubrecPacket(_) => None,
-                            packet::VariablePacket::PubrelPacket(_) => None,
-                            packet::VariablePacket::PubcompPacket(_) => None,
-                            packet::VariablePacket::PingreqPacket(_) => Some(Msg::WebSocketSend(
-                                VariablePacket::PingrespPacket(PingrespPacket::new()),
-                            )),
-                            packet::VariablePacket::PingrespPacket(_) => None,
-                            packet::VariablePacket::SubscribePacket(_) => None,
-                            packet::VariablePacket::SubackPacket(_) => None,
-                            packet::VariablePacket::UnsubscribePacket(_) => None,
-                            packet::VariablePacket::UnsubackPacket(_) => None,
-                            packet::VariablePacket::DisconnectPacket(_) => None,
-                        }
+                        Msg::WebSocketBytesReceived(bytes)
                     });
                 } else {
                     log!(format!("Binary message? {:?}", msg));
+                }
+            }
+            Msg::WebSocketBytesReceived(bytes) => {
+                let decrypted = model.decrypt(&bytes);
+                let mut dec_buf = Cursor::new(&decrypted);
+                let decoded = mqtt::packet::VariablePacket::decode(&mut dec_buf).unwrap();
+                if let packet::VariablePacket::PublishPacket(_) = decoded {
+                } else {
+                    log!("incoming packet: ", decoded);
+                }
+                match decoded {
+                    packet::VariablePacket::ConnectPacket(_) => {}
+                    packet::VariablePacket::ConnackPacket(_) => {
+                        orders.send_msg(Msg::MqttSubscribe);
+                        model.keep_alive_handle = Some(
+                            orders.stream_with_handle(streams::interval(20000, || Msg::KeepAlive)),
+                        );
+                    }
+                    packet::VariablePacket::PublishPacket(p) => {
+                        //incoming message. try to decode.
+                        let as_str = std::str::from_utf8(p.payload_ref()).unwrap();
+                        let as_mqtt_wrap: MqttWrap = serde_json::from_str(as_str).unwrap();
+                        let my_id = model.id;
+                        if as_mqtt_wrap.sender != my_id {
+                            let as_t: T = serde_json::from_str(&as_mqtt_wrap.msg).unwrap();
+                            log!("Decoded mqtt message", as_t);
+                            orders.notify(ReceivedMsg { msg: as_t });
+                        } else {
+                            log!("ignored incoming message from self");
+                        }
+                    }
+                    packet::VariablePacket::PubackPacket(_) => {}
+                    packet::VariablePacket::PubrecPacket(_) => {}
+                    packet::VariablePacket::PubrelPacket(_) => {}
+                    packet::VariablePacket::PubcompPacket(_) => {}
+                    packet::VariablePacket::PingreqPacket(_) => {
+                        model.send_pkt(VariablePacket::PingrespPacket(PingrespPacket::new()));
+                    }
+                    packet::VariablePacket::PingrespPacket(_) => {}
+                    packet::VariablePacket::SubscribePacket(_) => {}
+                    packet::VariablePacket::SubackPacket(_) => {}
+                    packet::VariablePacket::UnsubscribePacket(_) => {}
+                    packet::VariablePacket::UnsubackPacket(_) => {}
+                    packet::VariablePacket::DisconnectPacket(_) => {}
                 }
             }
             Msg::WebSocketFailed => {

@@ -88,30 +88,27 @@ impl Model {
     pub fn current_routine_item(&self) -> Option<&FlatStatus> {
         match self.published.state {
             RunningState::Config => None,
-            _ => Some(self.get_routine_item(self.published.routine_ix))
+            _ => Some(self.get_routine_item(self.published.routine_ix)),
         }
     }
-    pub fn goto_item(
-        &mut self,
-        new_ix: usize,
-        context: &crate::Context,
-    ) -> Vec<crate::subs::Event> {
+    pub fn goto_item(&mut self, new_ix: usize, context: &crate::Context) {
         self.published.routine_ix = new_ix;
-        let mut evs = vec![crate::subs::Event::PublishedStateUpdated];
         match self.published.state {
             RunningState::RunningSince(_) => {
                 self.published.state =
                     RunningState::RunningSince(context.current_time().timestamp_millis());
-                let item = self.current_routine_item().expect("Valid workout item when running");
+                let item = self
+                    .current_routine_item()
+                    .expect("Valid workout item when running");
                 let freq = if item.is_rest() { 440. } else { 880. };
-                evs.push(crate::subs::Event::Beep { freq, dur: 0.2 })
+                context.beep(0.2, freq);
             }
             RunningState::PausedAfter(_) => {
                 self.published.state = RunningState::PausedAfter(0);
             }
             RunningState::Config => {}
         }
-        evs
+        context.announce(&self.published);
     }
     pub fn time_fn(&mut self, context: &crate::Context) -> Vec<crate::subs::Event> {
         let old_elapsed = self.elapsed_millis();
@@ -120,21 +117,18 @@ impl Model {
             let elapsed = self.elapsed_millis();
             let remaining_millis = d as i64 * 1000 - elapsed;
             if remaining_millis <= 0 {
-                return self.goto_item(self.published.routine_ix + 1, context)
+                self.goto_item(self.published.routine_ix + 1, context)
             } else {
                 let remaining_now = d as i64 * 1000 - elapsed;
                 if remaining_now < 3000 {
                     let whole_rem_now = remaining_now / 1000;
                     let whole_rem_before = (d as i64 * 1000 - old_elapsed) / 1000;
                     if whole_rem_before != whole_rem_now {
-                        return vec![crate::subs::Event::Beep {
-                            freq: 440.,
-                            dur: 0.1,
-                        }];
+                        context.beep(0.1, 440.);
                     }
                 }
             }
-        } 
+        }
         Vec::new()
     }
 }
@@ -146,10 +140,7 @@ pub fn update(
 ) {
     match msg {
         Msg::Go => {
-            orders.notify(crate::subs::Event::Beep {
-                freq: 880.,
-                dur: 0.1,
-            });
+            context.beep(0.1, 880.);
             match model.published.state {
                 RunningState::RunningSince(start) => {
                     let done = context.current_time() - Duration::milliseconds(start);
@@ -166,21 +157,17 @@ pub fn update(
                         RunningState::RunningSince(context.current_time().timestamp_millis());
                 }
             }
-            orders.notify(crate::subs::Event::PublishedStateUpdated);
+            context.announce(&model.published);
         }
-        Msg::ChangeItem(new_ix) => {
-            for x in model.goto_item(new_ix, context) {
-                orders.notify(x);
-            }
-        }
+        Msg::ChangeItem(new_ix) => model.goto_item(new_ix, context),
         Msg::ToConfig => {
             model.published.state = RunningState::Config;
-            orders.notify(crate::subs::Event::PublishedStateUpdated);
+            context.announce(&model.published);
         }
         Msg::ConfigChanged(c) => {
             model.published.config = c;
             model.routine = model.compile_config();
-            orders.notify(crate::subs::Event::PublishedStateUpdated);
+            context.announce(&model.published);
         }
         Msg::Disconnect => {
             orders.notify(crate::subs::Event::Disconnect);
@@ -234,7 +221,9 @@ fn view_config(model: &Model) -> Node<Msg> {
     ]
 }
 fn view_running(model: &Model) -> Node<Msg> {
-    let current = model.current_routine_item().expect("Valid routine item in view_running");
+    let current = model
+        .current_routine_item()
+        .expect("Valid routine item in view_running");
     let next = model.get_routine_item(model.published.routine_ix + 1);
     let time = match current.duration {
         None => model.elapsed_millis() / 1000,

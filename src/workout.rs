@@ -13,7 +13,7 @@ pub struct WorkoutItem {
     content: Work,
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize,Clone)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Clone)]
 pub struct FlatStatus {
     pub name: String,
     pub this_rep: u32,
@@ -22,7 +22,12 @@ pub struct FlatStatus {
 }
 
 pub fn timer(duration: i64) -> String {
-    format!("{}{}:{:02}", if duration < 0 {"-"} else {""}, duration.abs() / 60, duration.abs() % 60)
+    format!(
+        "{}{}:{:02}",
+        if duration < 0 { "-" } else { "" },
+        duration.abs() / 60,
+        duration.abs() % 60
+    )
 }
 
 impl FlatStatus {

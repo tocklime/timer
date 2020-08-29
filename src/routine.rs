@@ -1,7 +1,7 @@
 use crate::workout::FlatStatus;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 
 #[derive(Clone, Deserialize, Debug)]
 struct SimpleWork {
